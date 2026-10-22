@@ -1,9 +1,9 @@
 /*
- * Rostro service worker: makes the app work offline. Editing runs in the browser, so caching the
+ * Visage service worker: makes the app work offline. Editing runs in the browser, so caching the
  * program (pages, scripts, the vision engine and its models) is enough. Photos are never cached.
  */
-const STATIC = "rostro-static-v1";
-const PAGES = "rostro-pages-v1";
+const STATIC = "visage-static-v1";
+const PAGES = "visage-pages-v1";
 const CORE = ["/", "/manifest.webmanifest", "/icons/icon-192.png"];
 
 self.addEventListener("install", (event) => {
@@ -25,7 +25,10 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-const isStatic = (url) => url.origin === self.location.origin && (/^\/(_next\/static|vendor|models|icons)\//.test(url.pathname) || /\.(woff2?|png|svg|ico)$/.test(url.pathname));
+// Only the big files that never change under the same name come from the cache first. The app's own
+// code goes to the network first: some chunk names (e.g. the engine worker's) survive a rebuild with
+// new contents, and serving them from the cache would run an old engine.
+const isStatic = (url) => url.origin === self.location.origin && (/^\/(vendor|models|icons)\//.test(url.pathname) || /\.(woff2?|png|svg|ico)$/.test(url.pathname));
 
 async function cacheFirst(request) {
   const cached = await caches.match(request);
@@ -53,5 +56,5 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (isStatic(url)) event.respondWith(cacheFirst(request));
-  else if (request.mode === "navigate" || url.pathname === "/manifest.webmanifest") event.respondWith(networkFirst(request));
+  else if (request.mode === "navigate" || url.pathname.startsWith("/_next/static/") || url.pathname === "/manifest.webmanifest") event.respondWith(networkFirst(request));
 });

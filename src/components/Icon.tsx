@@ -50,6 +50,20 @@ const PATHS: Record<string, React.ReactNode> = {
       <rect x="13" y="13" width="8" height="8" rx="2" />
     </>
   ),
+  glasses: (
+    <>
+      <circle cx="6.5" cy="13" r="3.8" />
+      <circle cx="17.5" cy="13" r="3.8" />
+      <path d="M10.3 12.5q1.7-1.2 3.4 0M2.7 12L2 9M21.3 12l.7-3" />
+    </>
+  ),
+  ai: (
+    <>
+      <path d="M9.5 4l1.6 4.4 4.4 1.6-4.4 1.6-1.6 4.4-1.6-4.4L3.5 10l4.4-1.6z" />
+      <path d="M17.5 13l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" />
+      <path d="M17 3v3M15.5 4.5h3" />
+    </>
+  ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
   undo: <path d="M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 010 11H11" />,
   redo: <path d="M15 14l5-5-5-5M20 9H9.5a5.5 5.5 0 000 11H13" />,

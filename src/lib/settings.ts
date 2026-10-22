@@ -2,9 +2,10 @@
 
 export type Settings = Record<string, number | string>;
 
-export type SliderSpec = { kind: "slider"; id: string; label: string; min: number; max: number };
-export type ColorSpec = { kind: "color"; id: string; label: string; strength: string; colors: { name: string; hex: string }[] };
-export type ChoiceSpec = { kind: "choice"; id: string; label: string; options: { id: string; name: string }[] };
+/** `when`: only shown while that other setting has a value. */
+export type SliderSpec = { kind: "slider"; id: string; label: string; min: number; max: number; when?: string };
+export type ColorSpec = { kind: "color"; id: string; label: string; strength: string; colors: { name: string; hex: string }[]; when?: string };
+export type ChoiceSpec = { kind: "choice"; id: string; label: string; options: { id: string; name: string }[]; when?: string; showLabel?: boolean };
 export type Control = SliderSpec | ColorSpec | ChoiceSpec;
 
 export type Category = { id: string; label: string; icon: string; controls: Control[]; needsSegmentation?: boolean };
@@ -75,23 +76,63 @@ export const FILTERS = [
   { id: "noir", name: "Noir" },
 ];
 
+export const GLASSES = [
+  { id: "", name: "Ninguna" },
+  { id: "clasicas", name: "Clásicas" },
+  { id: "redondas", name: "Redondas" },
+  { id: "aviador", name: "Aviador" },
+  { id: "gato", name: "Ojo de gato" },
+  { id: "sol", name: "De sol" },
+  { id: "solAviador", name: "Sol aviador" },
+];
+
+export const FRAME_COLORS = [
+  { id: "", name: "Negra" },
+  { id: "carey", name: "Carey" },
+  { id: "dorada", name: "Dorada" },
+  { id: "plateada", name: "Plateada" },
+  { id: "transparente", name: "Transparente" },
+];
+
+export const LIGHTS = [
+  { id: "", name: "Natural" },
+  { id: "estudio", name: "Estudio" },
+  { id: "lateral", name: "Lateral" },
+  { id: "dorada", name: "Hora dorada" },
+  { id: "dramatica", name: "Dramática" },
+];
+
 export const CATEGORIES: Category[] = [
   {
     id: "retoque",
     label: "Retoque",
     icon: "sparkles",
-    controls: [slider("suavizar", "Suavizar piel"), slider("manchas", "Unificar tono"), slider("iluminar", "Iluminar rostro"), slider("ojeras", "Ojeras"), slider("dientes", "Blanquear dientes"), slider("brilloOjos", "Brillo de ojos")],
+    controls: [
+      slider("suavizar", "Suavizar piel"),
+      slider("arrugas", "Quitar arrugas"),
+      slider("manchas", "Unificar tono y acné"),
+      slider("iluminar", "Iluminar rostro"),
+      slider("ojeras", "Ojeras"),
+      slider("dientes", "Blanquear dientes"),
+      slider("brilloOjos", "Brillo de ojos"),
+    ],
   },
-  { id: "sonrisa", label: "Sonrisa", icon: "smile", controls: [slider("sonrisa", "Sonrisa", -100, 100)] },
+  {
+    id: "expresion",
+    label: "Expresión",
+    icon: "smile",
+    controls: [slider("sonrisa", "Sonrisa", -100, 100), slider("sorpresa", "Sorpresa"), slider("enfado", "Ceño fruncido"), slider("abrirOjos", "Abrir ojos", -100, 100)],
+  },
   {
     id: "forma",
     label: "Forma",
     icon: "face",
     controls: [
       slider("rostro", "Rostro más fino", -100, 100),
+      slider("peso", "Peso", -100, 100),
       slider("pomulos", "Pómulos", -100, 100),
       slider("menton", "Mentón", -100, 100),
-      slider("frente", "Frente", -100, 100),
+      slider("frente", "Frente más pequeña", -100, 100),
       slider("ojos", "Ojos más grandes", -100, 100),
       slider("nariz", "Nariz más fina", -100, 100),
       slider("labios", "Labios más gruesos", -100, 100),
@@ -108,6 +149,16 @@ export const CATEGORIES: Category[] = [
       slider("delineado", "Delineado"),
       slider("pestanas", "Pestañas"),
       slider("cejasDef", "Definir cejas"),
+    ],
+  },
+  {
+    id: "accesorios",
+    label: "Gafas y barba",
+    icon: "glasses",
+    controls: [
+      { kind: "choice", id: "gafas", label: "Gafas", options: GLASSES, showLabel: true },
+      { kind: "choice", id: "gafasColor", label: "Montura", options: FRAME_COLORS, when: "gafas", showLabel: true },
+      slider("barba", "Barba incipiente"),
     ],
   },
   { id: "ojos", label: "Ojos", icon: "eye", controls: [{ kind: "color", id: "ojosColor", label: "Color de ojos", strength: "ojosIntensidad", colors: EYE_COLORS }] },
@@ -131,6 +182,8 @@ export const CATEGORIES: Category[] = [
     label: "Ajustes",
     icon: "sliders",
     controls: [
+      { kind: "choice", id: "luz", label: "Iluminación", options: LIGHTS, showLabel: true },
+      { ...slider("luzIntensidad", "Intensidad de la luz"), when: "luz" },
       slider("brillo", "Brillo", -100, 100),
       slider("contraste", "Contraste", -100, 100),
       slider("saturacion", "Saturación", -100, 100),
@@ -156,6 +209,10 @@ export const DEFAULTS: Settings = {
   cabelloColor: "",
   fondoColor: "",
   filtro: "",
+  gafas: "",
+  gafasColor: "",
+  luz: "",
+  luzIntensidad: 60,
 };
 
 export const num = (s: Settings, id: string) => (typeof s[id] === "number" ? (s[id] as number) : 0);
@@ -165,13 +222,16 @@ export const str = (s: Settings, id: string) => (typeof s[id] === "string" ? (s[
 export const LOOKS: { id: string; name: string; settings: Settings }[] = [
   { id: "natural", name: "Natural", settings: { suavizar: 35, manchas: 25, iluminar: 15, ojeras: 35, dientes: 30, brilloOjos: 20 } },
   { id: "sonrisa", name: "Sonrisa", settings: { sonrisa: 70, suavizar: 25, ojeras: 25, dientes: 40 } },
-  { id: "hollywood", name: "Hollywood", settings: { sonrisa: 55, suavizar: 55, manchas: 40, iluminar: 25, ojeras: 50, dientes: 70, brilloOjos: 35, ojos: 18, rostro: 25, nariz: 15, nitidez: 20 } },
-  { id: "joven", name: "Más joven", settings: { suavizar: 80, manchas: 60, iluminar: 30, ojeras: 70, ojos: 22, rostro: 15, menton: -10, labios: 15, brilloOjos: 30 } },
+  { id: "hollywood", name: "Hollywood", settings: { sonrisa: 55, arrugas: 40, suavizar: 55, manchas: 40, iluminar: 25, ojeras: 50, dientes: 70, brilloOjos: 35, ojos: 18, rostro: 25, nariz: 15, nitidez: 20 } },
+  { id: "joven", name: "Más joven", settings: { suavizar: 80, arrugas: 90, manchas: 60, iluminar: 30, ojeras: 70, ojos: 22, rostro: 15, menton: -10, labios: 15, brilloOjos: 30 } },
   {
     id: "glam",
     name: "Glamour",
     settings: { suavizar: 60, manchas: 45, iluminar: 20, ojeras: 50, labialColor: "#b3122e", labial: 65, ruborColor: "#e8768f", rubor: 40, delineado: 60, pestanas: 55, cejasDef: 35, ojos: 12, rostro: 20, nariz: 12 },
   },
   { id: "modelo", name: "Modelo", settings: { rostro: 35, pomulos: 30, menton: 10, ojos: 15, nariz: 25, labios: 20, suavizar: 50, manchas: 40, contraste: 12, nitidez: 25 } },
+  { id: "estudio", name: "Estudio", settings: { luz: "estudio", luzIntensidad: 70, suavizar: 40, arrugas: 30, ojeras: 40, contraste: 8, nitidez: 20 } },
+  { id: "intelectual", name: "Intelectual", settings: { gafas: "clasicas", suavizar: 25, ojeras: 30 } },
+  { id: "verano", name: "Verano", settings: { gafas: "sol", luz: "dorada", luzIntensidad: 60, calidez: 25, saturacion: 10 } },
   { id: "retrato", name: "Retrato", settings: { suavizar: 30, ojeras: 30, desenfoque: 55, vineta: 25, contraste: 10 } },
 ];

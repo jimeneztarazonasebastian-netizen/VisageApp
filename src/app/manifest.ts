@@ -2,9 +2,9 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Rostro · Editor de caras",
-    short_name: "Rostro",
-    description: "Edita tus selfies: sonrisa, retoque, forma, maquillaje, cabello, fondo y filtros. Todo en tu teléfono.",
+    name: "Visage · Editor de caras",
+    short_name: "Visage",
+    description: "Edita tus selfies: edad, sonrisa, retoque, forma, maquillaje, gafas, cabello, fondo y filtros.",
     start_url: "/",
     scope: "/",
     display: "standalone",

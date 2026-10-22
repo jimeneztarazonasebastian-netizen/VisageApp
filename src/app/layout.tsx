@@ -5,9 +5,9 @@ import "./globals.css";
 const geist = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Rostro · Editor de caras",
-  description: "Edita tus selfies como en FaceApp: sonrisa, retoque, forma, maquillaje, cabello, fondo y filtros. Todo en tu teléfono.",
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Rostro" },
+  title: "Visage · Editor de caras",
+  description: "Edita tus selfies como en FaceApp: edad, sonrisa, retoque, forma, maquillaje, gafas, cabello, fondo y filtros.",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Visage" },
   icons: { apple: "/icons/apple-touch-icon.png" },
   formatDetection: { telephone: false },
 };

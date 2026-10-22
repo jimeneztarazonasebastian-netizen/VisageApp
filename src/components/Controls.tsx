@@ -8,7 +8,7 @@ type Props = { settings: Settings; onChange: (patch: Settings) => void; onCommit
 export function Controls({ controls, ...p }: Props & { controls: Control[] }) {
   return (
     <div className="flex flex-col gap-4 px-4">
-      {controls.map((c) =>
+      {controls.filter((c) => !c.when || p.settings[c.when]).map((c) =>
         c.kind === "slider" ? <Slider key={c.id} spec={c} {...p} /> : c.kind === "color" ? <ColorPicker key={c.id} spec={c} {...p} /> : <Choice key={c.id} spec={c} {...p} />,
       )}
     </div>
@@ -106,6 +106,8 @@ function ColorPicker({ spec, settings, onChange, onCommit }: Props & { spec: Col
 function Choice({ spec, settings, onChange, onCommit }: Props & { spec: ChoiceSpec }) {
   const current = str(settings, spec.id);
   return (
+    <div>
+    {spec.showLabel && <div className="mb-2 text-[13px] text-white/85">{spec.label}</div>}
     <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 pb-1">
       {spec.options.map((o) => (
         <button
@@ -120,6 +122,7 @@ function Choice({ spec, settings, onChange, onCommit }: Props & { spec: ChoiceSp
           {o.name}
         </button>
       ))}
+    </div>
     </div>
   );
 }

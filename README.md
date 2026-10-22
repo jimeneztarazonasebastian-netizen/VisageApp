@@ -1,20 +1,24 @@
-# Rostro
+# Visage
 
-Editor de caras al estilo FaceApp, pensado para el iPhone. Todo se procesa en el navegador: las fotos
-nunca salen del teléfono. Se instala como app desde Safari (Compartir → «Añadir a pantalla de inicio»)
+Editor de caras al estilo FaceApp, pensado para el iPhone. Casi todo se procesa en el navegador; solo
+la pestaña **IA** envía la foto a Gemini (Google). Se instala como app desde Safari (Compartir → «Añadir a pantalla de inicio»)
 y funciona sin conexión después de la primera carga.
 
 ## Qué hace
 
 - **Looks** de un toque (Natural, Sonrisa, Hollywood, Más joven, Glamour, Modelo, Retrato) con miniaturas de tu propia cara.
-- **Retoque:** suavizar piel (conserva la textura), unificar tono, iluminar, ojeras, blanquear dientes, brillo de ojos.
-- **Sonrisa:** más o menos sonrisa (deforma comisuras, mejillas y párpados).
-- **Forma:** rostro más fino, pómulos, mentón, frente, ojos, nariz, labios, cejas.
+- **IA (Gemini):** edad (niño, adolescente, joven, 40, 60, 80), género, barba (corta, completa, candado, bigote, afeitado),
+  peinados (largo, corto, flequillo, rizado, ondulado, liso, bob, coleta, moño, afro, rapado, calvo), sonrisa con dientes,
+  carcajada, maquillaje, canas, pecas, tatuajes, traje y una edición libre escrita por ti.
+- **Retoque:** suavizar piel (conserva la textura), quitar arrugas, unificar tono y acné, iluminar, ojeras, blanquear dientes, brillo de ojos.
+- **Expresión:** sonrisa, sorpresa, ceño fruncido, abrir ojos.
+- **Forma:** rostro más fino, peso, pómulos, mentón, frente, ojos, nariz, labios, cejas.
+- **Gafas y barba:** 6 modelos de gafas (clásicas, redondas, aviador, ojo de gato, de sol, sol aviador) en 5 monturas, y barba incipiente.
 - **Maquillaje:** labial, rubor, delineado, pestañas, cejas definidas.
 - **Ojos:** color de iris.
 - **Cabello:** color (modelo de segmentación, se carga solo al usarlo).
 - **Fondo:** desenfoque tipo retrato o color de fondo.
-- **Filtros y ajustes:** brillo, contraste, saturación, calidez, luces, sombras, nitidez, viñeta.
+- **Filtros y ajustes:** iluminación (estudio, lateral, hora dorada, dramática), brillo, contraste, saturación, calidez, luces, sombras, nitidez, viñeta.
 - Deshacer/rehacer, zoom con pellizco, mantener pulsado para ver el original, guardar a resolución completa (hasta 12 MP) y compartir a Fotos.
 
 ## Cómo funciona
@@ -37,9 +41,15 @@ npm run dev
 
 ## Despliegue en Vercel
 
-Importa el repositorio en Vercel; no necesita variables de entorno ni configuración extra.
+Importa el repositorio en Vercel y añade en **Settings → Environment Variables**:
 
-## Límites
+| Variable | Para qué |
+| --- | --- |
+| `GEMINI_API_KEY` | Llave de Google AI Studio para la pestaña IA (obligatoria para la IA; lo demás funciona sin ella) |
+| `APP_PASSWORD` | Recomendada: contraseña que la app pide antes de usar la IA, para que nadie más gaste tu cuota si encuentra la URL |
+| `GEMINI_IMAGE_MODEL` | Opcional: modelo a usar (por defecto `gemini-nano-banana-2.1`, con respaldo en `gemini-3.1-flash-image` y `gemini-2.5-flash-image`) |
 
-La edad, el cambio de género y la sonrisa con dientes nuevos de FaceApp necesitan IA generativa,
-que no corre bien en el navegador de un iPhone. Aquí la sonrisa y la forma se hacen deformando la foto.
+Después de añadirlas, vuelve a desplegar (Deployments → Redeploy).
+
+Cada edición con IA cuesta del orden de US$0,04 con Nano Banana. La IA trabaja sobre una copia de hasta
+1536 px y devuelve una imagen de ~2K, que pasa a ser la foto base sobre la que siguen funcionando los ajustes.

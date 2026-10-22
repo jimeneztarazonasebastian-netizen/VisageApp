@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getEngine } from "@/lib/engine/client";
 import { needsSegmentation } from "@/lib/engine/render";
 import { drawScaled, exportCanvas, loadPhoto, pixels, toBlob, type Photo } from "@/lib/photo";
+import { AI_GROUPS } from "@/lib/ai-presets";
 import { CATEGORIES, DEFAULTS, LOOKS, type Settings } from "@/lib/settings";
 import { detectFaces, preloadFaces, segment, type Face, type Segmentation } from "@/lib/vision";
 import { Controls } from "./Controls";
@@ -37,12 +38,13 @@ export function App() {
 
 function Home({ onFile, error }: { onFile: (f: File | undefined) => void; error: string }) {
   return (
-    <main className="safe flex min-h-dvh flex-col items-center justify-between bg-black px-6 py-10 text-white">
+    <main className="safe flex min-h-dvh flex-col bg-black text-white">
+      <div className="flex flex-1 flex-col items-center justify-between px-6 py-10">
       <div className="mt-6 flex flex-col items-center text-center">
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/icons/icon-192.png" alt="" className="h-20 w-20 rounded-[22px] shadow-[0_10px_40px_rgba(168,85,247,.45)]" />
-        <h1 className="mt-6 text-4xl font-semibold tracking-tight">Rostro</h1>
-        <p className="mt-3 max-w-xs text-[15px] leading-relaxed text-white/60">Sonrisa, retoque, forma de la cara, maquillaje, color de ojos y cabello, fondo y filtros.</p>
+        <img src="/icons/logo.svg" alt="" className="h-24 w-24 shadow-[0_12px_48px_rgba(255,95,168,.35)] rounded-[26px]" />
+        <h1 className="mt-6 text-4xl font-semibold tracking-tight">Visage</h1>
+        <p className="mt-3 max-w-xs text-[15px] leading-relaxed text-white/60">Edad, género, sonrisa, retoque, forma de la cara, maquillaje, gafas, cabello, fondo y filtros.</p>
       </div>
 
       <div className="flex w-full max-w-sm flex-col gap-3">
@@ -59,15 +61,21 @@ function Home({ onFile, error }: { onFile: (f: File | undefined) => void; error:
         </label>
         <p className="mt-3 flex items-center justify-center gap-2 text-center text-xs text-white/45">
           <Icon name="lock" className="h-3.5 w-3.5" />
-          Todo se procesa en tu teléfono. Tus fotos no se suben a ningún sitio.
+          Se edita en tu teléfono. Solo las opciones de IA envían la foto a Gemini.
         </p>
+      </div>
       </div>
     </main>
   );
 }
 
-function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void; onFile: (f: File | undefined) => void }) {
+function Editor({ photo: initial, onClose, onFile }: { photo: Photo; onClose: () => void; onFile: (f: File | undefined) => void }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  // Each AI edit produces a new base photo; the sliders keep applying on top of the latest one.
+  const [bases, setBases] = useState<Photo[]>([initial]);
+  const photo = bases[bases.length - 1];
+  const [aiBusy, setAiBusy] = useState("");
+  const [needPassword, setNeedPassword] = useState(false);
   const engine = getEngine();
   const [faces, setFaces] = useState<Face[] | null>(null);
   const [seg, setSeg] = useState<Segmentation | null>(null);
@@ -86,6 +94,10 @@ function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void;
   // Analyse the face once per photo.
   useEffect(() => {
     let cancelled = false;
+    setFaces(null);
+    setSeg(null);
+    setSegState("none");
+    setThumbs({});
     engine.setSource("preview", pixels(photo.preview));
     const c = canvas.current!;
     c.width = photo.preview.width;
@@ -146,11 +158,40 @@ function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void;
       setHolding(h);
       const ctx = canvas.current?.getContext("2d");
       if (!ctx) return;
-      if (h) ctx.drawImage(photo.preview, 0, 0);
+      if (h) drawFit(ctx, bases[0].preview);
       else if (lastFrame.current) ctx.putImageData(lastFrame.current, 0, 0);
     },
-    [photo],
+    [bases],
   );
+
+  const runAi = async (req: { preset?: string; custom?: string }, label: string) => {
+    if (aiBusy) return;
+    setAiBusy(label);
+    try {
+      const src = drawScaled(photo.image, photo.width, photo.height, 1536);
+      const image = await blobToBase64(await toBlob(src, "image/jpeg", 0.92));
+      let password = "";
+      try {
+        password = localStorage.getItem("visage-clave") ?? "";
+      } catch {}
+      const res = await fetch("/api/ia", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-app-password": password },
+        body: JSON.stringify({ image, mime: "image/jpeg", width: src.width, height: src.height, ...req }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { image?: string; mime?: string; error?: string };
+      if (res.status === 401) setNeedPassword(true);
+      if (!res.ok || !json.image) throw new Error(json.error || `Error ${res.status}`);
+      const bytes = Uint8Array.from(atob(json.image), (c) => c.charCodeAt(0));
+      const next = await loadPhoto(new File([bytes], `${photo.name}.jpg`, { type: json.mime || "image/jpeg" }));
+      next.name = initial.name;
+      setBases((b) => [...b, next].slice(-8));
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAiBusy("");
+    }
+  };
 
   // Look thumbnails: the face rendered with each look, cropped around the first face.
   useEffect(() => {
@@ -215,8 +256,8 @@ function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void;
 
   // Test hook: /?debug lets automated checks set the sliders directly.
   useEffect(() => {
-    if (location.search.includes("debug")) (window as unknown as { __apply: typeof setSettings }).__apply = setSettings;
-  }, []);
+    if (location.search.includes("debug")) Object.assign(window, { __apply: setSettings, __faces: faces });
+  }, [faces]);
 
   const activeLook =LOOKS.find((l) => same(settings, { ...DEFAULTS, ...l.settings }))?.id;
 
@@ -229,7 +270,7 @@ function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void;
       full.getContext("2d")!.putImageData(img, 0, 0);
       const blob = await toBlob(full);
       full.width = full.height = 0;
-      const file = new File([blob], `${photo.name}-rostro.jpg`, { type: "image/jpeg" });
+      const file = new File([blob], `${photo.name}-visage.jpg`, { type: "image/jpeg" });
       setSaved((old) => {
         if (old) URL.revokeObjectURL(old.url);
         return { url: URL.createObjectURL(blob), file };
@@ -274,7 +315,16 @@ function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void;
 
       <section className="relative min-h-0 flex-1">
         <Viewer canvas={canvas} onHoldChange={hold} />
-        {!faces && <Badge>Analizando el rostro…</Badge>}
+        {!faces && !aiBusy && <Badge>Analizando el rostro…</Badge>}
+        {aiBusy && (
+          <div className="absolute inset-0 grid place-items-center bg-black/45 backdrop-blur-[2px]">
+            <div className="flex flex-col items-center gap-3 rounded-3xl bg-black/70 px-6 py-5 text-center">
+              <div className="h-9 w-9 animate-spin rounded-full border-2 border-white/20 border-t-fuchsia-400" />
+              <div className="text-sm font-medium">{aiBusy}</div>
+              <div className="text-xs text-white/55">Generando con IA, suele tardar 10–30 s</div>
+            </div>
+          </div>
+        )}
         {segState === "loading" && <Badge>Cargando cabello y fondo…</Badge>}
         {holding && <Badge>Original</Badge>}
         <button
@@ -295,7 +345,21 @@ function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void;
 
       <section className="shrink-0 bg-neutral-950 pb-1 pt-3">
         <div className="h-[184px] overflow-y-auto">
-          {category === "looks" ? (
+          {category === "ia" ? (
+            <AiPanel
+              busy={!!aiBusy}
+              canUndo={bases.length > 1}
+              onUndo={() => setBases((b) => b.slice(0, -1))}
+              onRun={runAi}
+              needPassword={needPassword}
+              onPassword={(pw) => {
+                try {
+                  localStorage.setItem("visage-clave", pw);
+                } catch {}
+                setNeedPassword(false);
+              }}
+            />
+          ) : category === "looks" ? (
             <div className="no-scrollbar flex gap-3 overflow-x-auto px-4 pt-1">
               {[{ id: "", name: "Original", settings: {} }, ...LOOKS].map((l) => {
                 const active = l.id ? activeLook === l.id : same(settings, DEFAULTS);
@@ -319,7 +383,7 @@ function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void;
         </div>
 
         <nav className="no-scrollbar mt-1 flex gap-1 overflow-x-auto border-t border-white/10 px-2 pt-2">
-          {[{ id: "looks", label: "Looks", icon: "looks" }, ...CATEGORIES].map((c) => (
+          {[{ id: "looks", label: "Looks", icon: "looks" }, { id: "ia", label: "IA", icon: "ai" }, ...CATEGORIES].map((c) => (
             <button key={c.id} onClick={() => setCategory(c.id)} className={`flex w-[68px] shrink-0 flex-col items-center gap-1 rounded-xl py-1.5 text-[11px] ${category === c.id ? "text-white" : "text-white/45"}`}>
               <Icon name={c.icon} className="h-6 w-6" />
               {c.label}
@@ -330,6 +394,91 @@ function Editor({ photo, onClose, onFile }: { photo: Photo; onClose: () => void;
 
       {saved && <SaveSheet saved={saved} onClose={() => setSaved(null)} onFile={onFile} />}
     </main>
+  );
+}
+
+function drawFit(ctx: CanvasRenderingContext2D, img: HTMLCanvasElement) {
+  const { width: W, height: H } = ctx.canvas;
+  const k = Math.min(W / img.width, H / img.height);
+  const w = img.width * k, h = img.height * k;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] ?? "");
+    r.onerror = () => reject(new Error("No se pudo leer la foto"));
+    r.readAsDataURL(blob);
+  });
+}
+
+function AiPanel({
+  busy,
+  canUndo,
+  onUndo,
+  onRun,
+  needPassword,
+  onPassword,
+}: {
+  busy: boolean;
+  canUndo: boolean;
+  onUndo: () => void;
+  onRun: (req: { preset?: string; custom?: string }, label: string) => void;
+  needPassword: boolean;
+  onPassword: (pw: string) => void;
+}) {
+  const [custom, setCustom] = useState("");
+  const [pw, setPw] = useState("");
+  return (
+    <div className="flex flex-col gap-3.5 px-4">
+      {needPassword && (
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onPassword(pw);
+          }}
+        >
+          <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Contraseña de la app" className="min-w-0 flex-1 rounded-xl bg-white/10 px-3 py-2 text-sm outline-none" />
+          <button className="rounded-xl bg-white px-4 text-sm font-medium text-black">Guardar</button>
+        </form>
+      )}
+      <div className="flex items-center justify-between gap-3 text-[11px] text-white/50">
+        <span>Envía la foto a Gemini (Google) · ~US$0,04 por edición</span>
+        {canUndo && (
+          <button className="shrink-0 rounded-full bg-white/10 px-3 py-1 text-xs text-white" onClick={onUndo} disabled={busy}>
+            Quitar última IA
+          </button>
+        )}
+      </div>
+      {AI_GROUPS.map((g) => (
+        <div key={g.id}>
+          <div className="mb-1.5 text-[13px] text-white/85">{g.label}</div>
+          <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4">
+            {g.presets.map((p) => (
+              <button key={p.id} disabled={busy} onClick={() => onRun({ preset: p.id }, `${g.label}: ${p.name}`)} className="shrink-0 rounded-full bg-white/10 px-4 py-2 text-sm text-white/90 active:bg-fuchsia-600 disabled:opacity-40">
+                {p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+      <form
+        className="flex gap-2 pb-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (custom.trim()) onRun({ custom }, "Edición personalizada");
+        }}
+      >
+        <input value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="Pide otra cosa, p. ej. ponle gafas de sol rojas" className="min-w-0 flex-1 rounded-xl bg-white/10 px-3 py-2.5 text-sm outline-none placeholder:text-white/35" />
+        <button disabled={busy || !custom.trim()} className="rounded-xl bg-gradient-to-r from-violet-600 to-fuchsia-600 px-4 text-sm font-medium disabled:opacity-40">
+          Crear
+        </button>
+      </form>
+    </div>
   );
 }
 

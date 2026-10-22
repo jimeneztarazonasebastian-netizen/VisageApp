@@ -149,6 +149,42 @@ function warpOps(g: Geo, s: Settings): WarpOp[] {
   if (brows) {
     for (const i of [...L.BROW_L.slice(0, 5), ...L.BROW_R.slice(0, 5)]) ops.push({ kind: "move", c: p[i], r: eyeW * 0.42, v: mul(up, 0.09 * eyeW * brows) });
   }
+
+  // Weight: cheeks and jaw puff out (or hollow in) the way the soft tissue does, more at the bottom.
+  const weight = v(s, "peso");
+  if (weight) {
+    const weights = [0.8, 1, 1, 0.9, 0.7, 0.5];
+    [...L.JAW_L.map((i, k) => [i, weights[k]]), ...L.JAW_R.map((i, k) => [i, weights[k]])].forEach(([i, w]) =>
+      ops.push({ kind: "move", c: p[i], r: faceW * 0.24, v: add(mul(ex, sideOf(p[i]) * 0.055 * faceW * weight * w), mul(ey, 0.012 * faceW * weight * w)) }),
+    );
+    for (const i of [L.SMILE_CHEEK_L, L.SMILE_CHEEK_R]) ops.push({ kind: "scale", c: p[i], r: faceW * 0.2, s: 0.07 * weight });
+    ops.push({ kind: "move", c: p[L.CHIN], r: faceW * 0.3, v: mul(ey, 0.025 * faceH * weight) });
+  }
+
+  // Surprise: brows up, eyes wider open.
+  const surprise = v(s, "sorpresa");
+  const openEyes = v(s, "abrirOjos") + surprise * 0.8;
+  if (surprise) {
+    for (const i of [...L.BROW_L.slice(0, 5), ...L.BROW_R.slice(0, 5)]) ops.push({ kind: "move", c: p[i], r: eyeW * 0.45, v: mul(up, 0.16 * eyeW * surprise) });
+  }
+  if (openEyes) {
+    const centres = p.length > L.IRIS_R ? [p[L.IRIS_L], p[L.IRIS_R]] : [centroid(pick(p, L.EYE_L)), centroid(pick(p, L.EYE_R))];
+    for (const c of centres) ops.push({ kind: "scale", c, r: eyeW * 0.85, s: 0.22 * Math.max(-1, Math.min(1.2, openEyes)), sx: Math.abs(ey.x), sy: Math.abs(ey.y) });
+  }
+
+  // Frown: inner brow ends down and towards each other, outer ends slightly up.
+  const frown = v(s, "enfado");
+  if (frown) {
+    const browC = mid(p[L.BROW_MID_L], p[L.BROW_MID_R]);
+    for (const [inner, outer] of [
+      [107, 70],
+      [336, 300],
+    ]) {
+      ops.push({ kind: "move", c: p[inner], r: eyeW * 0.5, v: add(mul(ey, 0.12 * eyeW * frown), mul(norm(sub(browC, p[inner])), 0.08 * eyeW * frown)) });
+      ops.push({ kind: "move", c: p[outer], r: eyeW * 0.4, v: mul(up, 0.04 * eyeW * frown) });
+    }
+    for (const i of [L.MOUTH_CORNER_L, L.MOUTH_CORNER_R]) ops.push({ kind: "move", c: p[i], r: mouthW * 0.5, v: mul(ey, 0.06 * mouthW * frown) });
+  }
   return ops;
 }
 
@@ -308,12 +344,28 @@ function guided(I: Float32Array, w: number, h: number, r: number, eps: number): 
 }
 
 function retouch(img: Img, g: Geo, s: Settings, seg: Segmentation | null, field: Field | null) {
-  const smooth = v(s, "suavizar"), even = v(s, "manchas"), light = v(s, "iluminar");
-  if (!smooth && !even && !light) return;
+  const smooth = v(s, "suavizar"), even = v(s, "manchas"), light = v(s, "iluminar"), wrinkles = v(s, "arrugas");
+  if (!smooth && !even && !light && !wrinkles) return;
   const m = skinMask(img, g, seg, field);
   const pl = extract(img, m);
   const { w, h } = m;
   const fw = g.faceW;
+
+  if (wrinkles) {
+    // Wrinkles are thin dark lines: the narrow band between a fine and a medium blur. Filling in
+    // only where that band is darker than its surroundings keeps pores and highlights intact.
+    const fine = gaussian(new Float32Array(pl.Y), w, h, Math.max(0.6, fw * 0.0025));
+    const medium = gaussian(new Float32Array(pl.Y), w, h, fw * 0.014);
+    const lift = new Float32Array(pl.Y.length);
+    for (let k = 0; k < lift.length; k++) lift[k] = Math.max(0, medium[k] - fine[k]);
+    // Spread the correction a little so the line's soft edges are covered too.
+    gaussian(lift, w, h, Math.max(0.6, fw * 0.003));
+    for (let k = 0; k < pl.Y.length; k++) {
+      const a = m.a[k] * wrinkles;
+      if (a <= 0) continue;
+      pl.Y[k] += lift[k] * a * 1.6;
+    }
+  }
 
   if (even) {
     // Dark spots and red blotches live in a middle band of detail: lift that band towards the
@@ -572,6 +624,208 @@ function defineBrows(img: Img, g: Geo, amt: number) {
   }
 }
 
+// ───────────────────────────── accessories ─────────────────────────────
+
+/** Smooth value noise in [0,1] (hash on a grid, bilinear), for tortoiseshell and stubble. */
+function noise(x: number, y: number, cell: number, seed = 0) {
+  const fx = x / cell, fy = y / cell;
+  const ix = Math.floor(fx), iy = Math.floor(fy);
+  const tx = fx - ix, ty = fy - iy;
+  const h = (a: number, b: number) => {
+    let n = (a * 374761393 + b * 668265263 + seed * 982451653) | 0;
+    n = (n ^ (n >>> 13)) * 1274126177;
+    return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+  };
+  const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+  const top = h(ix, iy) + (h(ix + 1, iy) - h(ix, iy)) * sx;
+  const bot = h(ix, iy + 1) + (h(ix + 1, iy + 1) - h(ix, iy + 1)) * sx;
+  return top + (bot - top) * sy;
+}
+
+type GlassStyle = { w: number; h: number; n: number; thick: number; dark: boolean; shape: (u: number, v: number) => [number, number] };
+
+const GLASS_STYLES: Record<string, GlassStyle> = {
+  clasicas: { w: 1.85, h: 1.25, n: 3.4, thick: 0.11, dark: false, shape: (u, v) => [u, v * (1 - 0.08 * u)] },
+  redondas: { w: 1.7, h: 1.6, n: 2, thick: 0.06, dark: false, shape: (u, v) => [u, v] },
+  aviador: { w: 1.95, h: 1.55, n: 2.6, thick: 0.035, dark: false, shape: (u, v) => [u, v > 0 ? v * (1.08 - 0.22 * u) : v * 0.85] },
+  gato: { w: 1.9, h: 1.25, n: 3, thick: 0.1, dark: false, shape: (u, v) => [u * (v < 0 ? 1 + 0.08 * Math.max(0, u) : 1), v < 0 ? v - 0.42 * Math.max(0, u) ** 2 : v * (1 - 0.15 * u)] },
+  sol: { w: 2.0, h: 1.5, n: 3.2, thick: 0.12, dark: true, shape: (u, v) => [u, v * (1 - 0.1 * u)] },
+  solAviador: { w: 2.0, h: 1.65, n: 2.6, thick: 0.035, dark: true, shape: (u, v) => [u, v > 0 ? v * (1.1 - 0.22 * u) : v * 0.85] },
+};
+
+const FRAME_RGB: Record<string, RGB> = { "": [18, 18, 20], carey: [74, 42, 20], dorada: [201, 162, 74], plateada: [184, 188, 194], transparente: [232, 232, 232] };
+
+function glasses(img: Img, g: Geo, style: GlassStyle, color: string) {
+  const { p, ex, ey, eyeW } = g;
+  const up = mul(ey, -1);
+  const centres = p.length > L.IRIS_R ? [p[L.IRIS_L], p[L.IRIS_R]] : [centroid(pick(p, L.EYE_L)), centroid(pick(p, L.EYE_R))];
+  const sides = [p[L.FACE_SIDE_L], p[L.FACE_SIDE_R]];
+  const lenses: P[][] = [];
+  const frames: P[][] = [];
+  const at = (c: P, out: number, u: number, v: number) => {
+    const [su, sv] = style.shape(u, v);
+    return add(add(c, mul(ex, out * su * style.w * eyeW * 0.5)), mul(ey, sv * style.h * eyeW * 0.5));
+  };
+  centres.forEach((c0, k) => {
+    const out = k === 0 ? -1 : 1; // outward from the nose
+    const c = add(c0, mul(up, 0.06 * eyeW));
+    const poly: P[] = [];
+    for (let i = 0; i < 72; i++) {
+      const t = (i / 72) * Math.PI * 2;
+      const ct = Math.cos(t), st = Math.sin(t);
+      poly.push(at(c, out, Math.sign(ct) * Math.abs(ct) ** (2 / style.n), Math.sign(st) * Math.abs(st) ** (2 / style.n)));
+    }
+    lenses.push(poly);
+    frames.push([...poly, poly[0]]);
+    // Temple arm from the top outer corner back towards the ear, ending at the side of the face.
+    const hinge = at(c, out, 1, -0.45);
+    const reach = Math.max(0, dot(sub(sides[k], hinge), mul(ex, out))) * 0.97;
+    if (reach > 0) frames.push([hinge, add(hinge, mul(ex, out * reach))]);
+  });
+  // Bridge over the nose.
+  const lc = add(centres[0], mul(up, 0.06 * eyeW)), rc = add(centres[1], mul(up, 0.06 * eyeW));
+  const bl = at(lc, -1, -0.97, -0.35), br = at(rc, 1, -0.97, -0.35);
+  frames.push(smoothOpen([bl, add(mid(bl, br), mul(up, 0.12 * eyeW)), br], 6));
+
+  const all = [...lenses.flat(), ...frames.flat()];
+  const box = bounds(all, eyeW * 0.5, img.W, img.H);
+  const frameM = emptyRegion(box), lensM = emptyRegion(box);
+  for (const l of lenses) fillPolygon(lensM, l, 1);
+  const thick = Math.max(1.2, style.thick * eyeW);
+  for (const f of frames) strokePolyline(frameM, f, () => (f.length === 2 ? thick * 0.7 : thick), 1);
+
+  // Soft shadow of the frame on the skin, cast slightly downwards.
+  const shadow = blurRegion({ ...frameM, a: new Float32Array(frameM.a) }, eyeW * 0.06);
+  const off = Math.round(eyeW * 0.07);
+  const [fr, fg, fb] = FRAME_RGB[color] ?? FRAME_RGB[""];
+  const clear = color === "transparente";
+  for (let y = 0; y < box.h; y++)
+    for (let x = 0; x < box.w; x++) {
+      const k = y * box.w + x;
+      const i = ((box.y0 + y) * img.W + box.x0 + x) * 4;
+      const fm = frameM.a[k];
+      const sm = y - off >= 0 ? shadow.a[(y - off) * box.w + x] : 0;
+      const lm = lensM.a[k] * (1 - fm);
+      let r = img.d[i], gg = img.d[i + 1], b = img.d[i + 2];
+      const shade = 1 - sm * (style.dark ? 0.35 : 0.25) * (1 - fm);
+      r *= shade; gg *= shade; b *= shade;
+      if (lm > 0) {
+        // Vertical position inside the lens (0 top → 1 bottom) for gradients and reflections.
+        const py = box.y0 + y + 0.5, px = box.x0 + x + 0.5;
+        const c = px < (lc.x + rc.x) / 2 === lc.x < rc.x ? lc : rc;
+        const vy = clamp01(0.5 + dot(sub({ x: px, y: py }, c), ey) / (style.h * eyeW));
+        const vx = dot(sub({ x: px, y: py }, c), ex) / (style.w * eyeW);
+        const streak = Math.max(0, 1 - Math.abs(vx + (vy - 0.5) * 0.9 + 0.12) / 0.07) * (1 - vy) * 0.5;
+        if (style.dark) {
+          const a = lm * (0.95 - 0.2 * vy);
+          r += (30 - r) * a; gg += (26 - gg) * a; b += (24 - b) * a;
+          r += (255 - r) * streak * 0.18 * lm; gg += (255 - gg) * streak * 0.18 * lm; b += (255 - b) * streak * 0.18 * lm;
+        } else {
+          r *= 1 - 0.04 * lm; gg *= 1 - 0.04 * lm; b *= 1 - 0.03 * lm;
+          r += (255 - r) * streak * 0.12 * lm; gg += (255 - gg) * streak * 0.12 * lm; b += (255 - b) * streak * 0.12 * lm;
+        }
+      }
+      if (fm > 0) {
+        let cr = fr, cg = fg, cb = fb;
+        if (color === "carey") {
+          const n = noise(box.x0 + x, box.y0 + y, eyeW * 0.09, 7) * 0.65 + noise(box.x0 + x, box.y0 + y, eyeW * 0.035, 3) * 0.35;
+          const t = smoothstep(0.35, 0.75, n);
+          cr = 30 + t * 150; cg = 16 + t * 86; cb = 8 + t * 30;
+        }
+        // Light from above: a little brighter at the top of each rim.
+        const lit = 1 + 0.18 * (1 - clamp01((y - 0) / Math.max(1, box.h)));
+        const a = fm * (clear ? 0.4 : 0.96);
+        r += (cr * lit - r) * a; gg += (cg * lit - gg) * a; b += (cb * lit - b) * a;
+      }
+      img.d[i] = r; img.d[i + 1] = gg; img.d[i + 2] = b;
+    }
+}
+
+/** Beard area: jaw line below, cheeks and the upper lip above, mouth cut out. */
+const BEARD = [361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 207, 92, 165, 167, 164, 393, 391, 322, 427];
+
+function stubble(img: Img, g: Geo, amt: number) {
+  const { p, faceW } = g;
+  const poly = smoothClosed(pick(p, BEARD));
+  const m = emptyRegion(bounds(poly, faceW * 0.05, img.W, img.H));
+  fillPolygon(m, poly, 1);
+  fillPolygon(m, smoothClosed(scalePoly(pick(p, L.LIPS_OUTER), 1.06)), -1);
+  blurRegion(m, faceW * 0.025);
+  const pl = extract(img, m);
+  const cell = Math.max(0.8, faceW * 0.0032);
+  for (let y = 0; y < m.h; y++)
+    for (let x = 0; x < m.w; x++) {
+      const k = y * m.w + x;
+      const a = m.a[k] * amt;
+      if (a <= 0.002) continue;
+      const gx = m.x0 + x, gy = m.y0 + y;
+      const dots = smoothstep(0.5, 0.8, noise(gx, gy, cell, 11)) * 0.7 + smoothstep(0.55, 0.85, noise(gx + 17, gy - 5, cell * 0.7, 5)) * 0.3;
+      // The shaved-shadow tone (darker, slightly blue-grey) plus the dots of the hairs.
+      pl.Y[k] *= 1 - a * (0.14 + 0.38 * dots);
+      pl.Cb[k] += 3 * a;
+      pl.Cr[k] -= 4 * a;
+    }
+  commit(img, m, pl, m);
+}
+
+function lighting(img: Img, geos: Geo[], kind: string, amt: number) {
+  const { W, H, d } = img;
+  type Lit = { m: Region; c: P; ex: P; r: number };
+  const lits: Lit[] = geos.map((g) => {
+    const oval = smoothClosed(scalePoly(pick(g.p, L.FACE_OVAL), 1.08));
+    const m = emptyRegion(bounds(oval, g.faceW * 0.15, W, H));
+    fillPolygon(m, oval, 1);
+    blurRegion(m, g.faceW * 0.06);
+    const eyes = mid(centroid(pick(g.p, L.EYE_L)), centroid(pick(g.p, L.EYE_R)));
+    return { m, c: add(eyes, mul(g.ey, 0.25 * g.faceH)), ex: g.ex, r: g.faceW * 0.62 };
+  });
+  const faceAt = (x: number, y: number) => {
+    let best = 0, lit: Lit | null = null;
+    for (const l of lits) {
+      const lx = x - l.m.x0, ly = y - l.m.y0;
+      if (lx < 0 || ly < 0 || lx >= l.m.w || ly >= l.m.h) continue;
+      const v = l.m.a[ly * l.m.w + lx];
+      if (v > best) {
+        best = v;
+        lit = l;
+      }
+    }
+    return { m: best, lit };
+  };
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const { m, lit } = faceAt(x, y);
+      let r = d[i], g = d[i + 1], b = d[i + 2];
+      // Position across the face (−1 image-left … 1 image-right) and distance from its centre.
+      const u = lit ? dot(sub({ x, y }, lit.c), lit.ex) / lit.r : (x / W) * 2 - 1;
+      const rad = lit ? Math.hypot(x - lit.c.x, y - lit.c.y) / lit.r : 1;
+      const gx = (x / W) * 2 - 1;
+      if (kind === "estudio") {
+        const key = m * Math.max(0, 1 - rad * rad);
+        const k = 1 + amt * (0.16 * key);
+        r = r * k + amt * m * (255 - r) * 0.06;
+        g = g * k + amt * m * (255 - g) * 0.06;
+        b = b * k + amt * m * (255 - b) * 0.06;
+      } else if (kind === "lateral" || kind === "dorada") {
+        const side = -Math.max(-1, Math.min(1, m > 0.05 ? u : gx));
+        const k = 1 + amt * (0.24 * side * Math.max(m, 0.35));
+        r *= k; g *= k; b *= k;
+        if (kind === "dorada") {
+          const warm = amt * (0.5 + 0.5 * Math.max(0, side));
+          r += 22 * warm; g += 9 * warm; b -= 18 * warm;
+        }
+      } else if (kind === "dramatica") {
+        const k = 1 - amt * 0.5 * (1 - m) * smoothstep(0.1, 1, Math.hypot(gx, (y / H) * 2 - 1) * 0.9 + 0.2);
+        const key = 1 + amt * 0.12 * m * Math.max(0, 1 - rad * rad);
+        r = 128 + (r * key * k - 128) * (1 + 0.15 * amt);
+        g = 128 + (g * key * k - 128) * (1 + 0.15 * amt);
+        b = 128 + (b * key * k - 128) * (1 + 0.15 * amt);
+      }
+      d[i] = r; d[i + 1] = g; d[i + 2] = b;
+    }
+}
+
 // ───────────────────────────── segmentation ─────────────────────────────
 
 function hairColor(img: Img, seg: Segmentation, field: Field | null, hex: string, amt: number) {
@@ -767,10 +1021,16 @@ export function render({ data, width: W, height: H, faces, seg, settings: s }: R
     if (num(s, "cejasDef")) defineBrows(img, g, v(s, "cejasDef"));
     if (num(s, "delineado")) eyeliner(img, g, v(s, "delineado"));
     if (num(s, "pestanas")) lashes(img, g, v(s, "pestanas"));
+    if (num(s, "barba")) stubble(img, g, v(s, "barba"));
   }
 
   if (seg && (num(s, "desenfoque") || (str(s, "fondoColor") && num(s, "fondoIntensidad"))))
     background(img, seg, field, v(s, "desenfoque"), str(s, "fondoColor"), v(s, "fondoIntensidad"));
+
+  // Light falls on the face and on the glasses alike, so glasses go first.
+  const glassStyle = GLASS_STYLES[str(s, "gafas")] as GlassStyle | undefined;
+  if (glassStyle) for (const g of warped) glasses(img, g, glassStyle, str(s, "gafasColor"));
+  if (str(s, "luz") && num(s, "luzIntensidad")) lighting(img, warped, str(s, "luz"), v(s, "luzIntensidad"));
 
   globalAdjust(img, s);
   return img.d;
