@@ -119,6 +119,7 @@ export async function POST(req: Request) {
   const models = [...new Set([process.env.GEMINI_IMAGE_MODEL, "gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-2.5-flash-image"].filter(Boolean) as string[])];
 
   let last: Attempt | null = null;
+  const quota: string[] = [];
   for (const model of models) {
     for (const attempt of [
       () => call(`${API}/interactions`, key, interactions(model, prompt, img, ratio)),
@@ -128,6 +129,12 @@ export async function POST(req: Request) {
       if (last.ok) return Response.json({ image: last.image.data, mime: last.image.mime, model });
       if (!tryNext(last)) break;
     }
+    // Quotas are per model (the free tier may cover one image model and not another), so a 429
+    // moves on to the next model; anything else that isn't "try another way" is final.
+    if (last && !last.ok && last.status === 429) {
+      quota.push(`${model}: ${last.message}`);
+      continue;
+    }
     if (last && !last.ok && !tryNext(last)) break;
   }
 
@@ -135,6 +142,17 @@ export async function POST(req: Request) {
   if (last.refused) return reply(422, `Gemini no hizo esta edición. ${last.message}`.trim());
   if (last.status === 400 && /api key/i.test(last.message)) return reply(502, "La llave de Gemini no es válida.");
   if (last.status === 401 || last.status === 403) return reply(502, "La llave de Gemini no es válida o no tiene permiso para este modelo.");
-  if (last.status === 429) return reply(429, "Se alcanzó el límite de uso de Gemini. Espera un momento o revisa tu cuota.");
+  if (last.status === 429) {
+    const free = quota.some((q) => /free.?tier|limit: ?0/i.test(q));
+    return Response.json(
+      {
+        error: free
+          ? "Tu llave de Gemini está en el plan gratuito y no tiene cuota para generar imágenes. Activa la facturación en Google AI Studio (Billing) y vuelve a intentarlo."
+          : "Se alcanzó el límite de uso de Gemini. Espera un minuto o revisa tu cuota en Google AI Studio.",
+        details: quota.map((q) => q.slice(0, 400)),
+      },
+      { status: 429 },
+    );
+  }
   return reply(502, `Error de Gemini (${last.status}): ${last.message}`);
 }
