@@ -1,17 +1,21 @@
 // Main-thread side of the engine worker. Preview renders are "latest wins": while one is running,
-// newer settings replace any queued request instead of piling up.
+// newer settings replace any queued request instead of piling up, and results arrive in order.
 import type { Settings } from "../settings";
 import type { Face, Segmentation } from "../vision";
 import type { WorkerRequest, WorkerResponse } from "./engine.worker";
 
 type Pending = { resolve: (v: ImageData) => void; reject: (e: Error) => void };
+type Job = { key: string; token: string; settings: Settings; resolve: (v: ImageData | null) => void };
+
+/** Thrown for renders of a photo that is no longer the current one. */
+export class StaleError extends Error {}
 
 export class Engine {
   private worker: Worker;
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private busy = false;
-  private queued: { settings: Settings; resolve: (v: ImageData | null) => void } | null = null;
+  private queued: Job | null = null;
 
   constructor() {
     this.worker = new Worker(new URL("./engine.worker.ts", import.meta.url), { type: "module" });
@@ -20,8 +24,13 @@ export class Engine {
       const p = this.pending.get(msg.id);
       if (!p) return;
       this.pending.delete(msg.id);
-      if (msg.type === "error") p.reject(new Error(msg.message));
+      if (msg.type === "error") p.reject(msg.stale ? new StaleError(msg.message) : new Error(msg.message));
       else p.resolve(new ImageData(new Uint8ClampedArray(msg.data.buffer as ArrayBuffer), msg.width, msg.height));
+    };
+    // If the worker itself fails, fail every request instead of leaving the editor waiting forever.
+    this.worker.onerror = () => {
+      for (const p of this.pending.values()) p.reject(new Error("El motor de edición dejó de responder. Recarga la app."));
+      this.pending.clear();
     };
   }
 
@@ -30,40 +39,52 @@ export class Engine {
   }
 
   /** Hands the pixels to the worker; `image` is unusable afterwards (its buffer is transferred). */
-  setSource(key: string, image: ImageData) {
+  setSource(key: string, token: string, image: ImageData) {
     const data = image.data;
-    this.post({ type: "source", key, data, width: image.width, height: image.height }, [data.buffer]);
+    this.post({ type: "source", key, token, data, width: image.width, height: image.height }, [data.buffer]);
   }
 
-  setAnalysis(faces: Face[], seg: Segmentation | null) {
-    this.post({ type: "analysis", faces, seg });
+  setAnalysis(token: string, faces: Face[], seg: Segmentation | null) {
+    this.post({ type: "analysis", token, faces, seg });
   }
 
-  render(key: string, settings: Settings): Promise<ImageData> {
+  /** Frees a slot's pixels (thumbnails and export are only needed for a moment). */
+  release(key: string) {
+    this.post({ type: "release", key });
+  }
+
+  render(key: string, token: string, settings: Settings): Promise<ImageData> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.post({ type: "render", id, key, settings });
+      this.post({ type: "render", id, key, token, settings });
     });
   }
 
-  /** Renders the preview; resolves null when a newer request superseded this one. */
-  preview(settings: Settings): Promise<ImageData | null> {
-    if (this.busy) {
-      this.queued?.resolve(null);
-      return new Promise((resolve) => (this.queued = { settings, resolve }));
-    }
-    this.busy = true;
-    const run = (s: Settings): Promise<ImageData> =>
-      this.render("preview", s).finally(() => {
-        const q = this.queued;
-        this.queued = null;
-        if (q) run(q.settings).then(q.resolve, () => q.resolve(null));
-        else this.busy = false;
-      });
-    return run(settings);
+  /** Renders into a preview slot; resolves null when superseded, stale or failed. */
+  preview(key: string, token: string, settings: Settings): Promise<ImageData | null> {
+    return new Promise((resolve) => {
+      const job: Job = { key, token, settings, resolve };
+      if (this.busy) {
+        this.queued?.resolve(null);
+        this.queued = job;
+        return;
+      }
+      this.run(job);
+    });
   }
 
+  private run(job: Job) {
+    this.busy = true;
+    this.render(job.key, job.token, job.settings)
+      .then(job.resolve, () => job.resolve(null))
+      .finally(() => {
+        const next = this.queued;
+        this.queued = null;
+        if (next) this.run(next);
+        else this.busy = false;
+      });
+  }
 }
 
 let shared: Engine | undefined;

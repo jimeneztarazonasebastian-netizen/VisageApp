@@ -90,6 +90,8 @@ function interactions(model: string, prompt: string, img: Found, ratio: string) 
       { type: "image", mime_type: img.mime, data: img.data },
     ],
     response_format: { type: "image", mime_type: "image/jpeg", aspect_ratio: ratio, image_size: "2K" },
+    // Don't keep the selfie and its result on Google's side (the Interactions API stores by default).
+    store: false,
   };
 }
 
@@ -103,7 +105,26 @@ function generateContent(prompt: string, img: Found, ratio: string) {
 /** A missing model or an unsupported field means "try the next way", anything else is final. */
 const tryNext = (a: Attempt) => !a.ok && !a.refused && (a.status === 404 || (a.status === 400 && /model|not found|unknown|unsupported|invalid json payload|response_format|image_size/i.test(a.message)));
 
+/**
+ * Only the app itself may call this: a page on another site could otherwise make its visitors'
+ * browsers start edits billed to your key. Browsers always send Sec-Fetch-Site / Origin on fetch.
+ */
+function sameSite(req: Request) {
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") return false;
+  const origin = req.headers.get("origin");
+  if (!origin) return true;
+  try {
+    const host = new URL(origin).host;
+    return [req.headers.get("x-forwarded-host"), req.headers.get("host"), new URL(req.url).host].includes(host);
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(req: Request) {
+  if (!(req.headers.get("content-type") ?? "").includes("application/json")) return reply(415, "Petición no válida.");
+  if (!sameSite(req)) return reply(403, "Petición no permitida.");
   const key = process.env.GEMINI_API_KEY;
   if (!key) return reply(500, "Falta la llave: añade GEMINI_API_KEY en Vercel (Settings → Environment Variables) y vuelve a desplegar.");
   if (!checkPassword(req)) return reply(401, "Contraseña incorrecta.");

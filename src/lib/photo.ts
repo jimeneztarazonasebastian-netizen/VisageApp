@@ -5,12 +5,18 @@ export const PREVIEW_EDGE = 1600;
 export const EXPORT_MAX_PIXELS = 12_200_000;
 
 export type Photo = {
+  /** Unique per loaded image: keys the editor and tags everything the engine holds for it. */
+  id: string;
   name: string;
+  /** The encoded image, kept so the session can be restored after iOS reloads the app. */
+  file: Blob;
   image: HTMLImageElement;
   width: number;
   height: number;
   preview: HTMLCanvasElement;
 };
+
+let loaded = 0;
 
 export async function loadPhoto(file: File): Promise<Photo> {
   const url = URL.createObjectURL(file);
@@ -32,7 +38,15 @@ export async function loadPhoto(file: File): Promise<Photo> {
   // Browsers apply the EXIF orientation when drawing, so these are the upright dimensions.
   const width = image.naturalWidth;
   const height = image.naturalHeight;
-  return { name: file.name.replace(/\.[^.]+$/, "") || "foto", image, width, height, preview: drawScaled(image, width, height, PREVIEW_EDGE) };
+  return {
+    id: `${Date.now().toString(36)}-${(++loaded).toString(36)}`,
+    name: file.name.replace(/\.[^.]+$/, "") || "foto",
+    file,
+    image,
+    width,
+    height,
+    preview: drawScaled(image, width, height, PREVIEW_EDGE),
+  };
 }
 
 export function drawScaled(image: CanvasImageSource, width: number, height: number, maxEdge: number, maxPixels = Infinity) {

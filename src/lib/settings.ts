@@ -213,7 +213,13 @@ export const DEFAULTS: Settings = {
   gafasColor: "",
   luz: "",
   luzIntensidad: 60,
+  // The look currently applied (one of LOOKS) and how strongly.
+  look: "",
+  lookIntensidad: 100,
 };
+
+/** The neutral value of a control: what its reset button goes back to. */
+export const defaultOf = (id: string): number | string => DEFAULTS[id] ?? 0;
 
 export const num = (s: Settings, id: string) => (typeof s[id] === "number" ? (s[id] as number) : 0);
 export const str = (s: Settings, id: string) => (typeof s[id] === "string" ? (s[id] as string) : "");
@@ -235,3 +241,27 @@ export const LOOKS: { id: string; name: string; settings: Settings }[] = [
   { id: "verano", name: "Verano", settings: { gafas: "sol", luz: "dorada", luzIntensidad: 60, calidez: 25, saturacion: 10 } },
   { id: "retrato", name: "Retrato", settings: { suavizar: 30, ojeras: 30, desenfoque: 55, vineta: 25, contraste: 10 } },
 ];
+
+/** A look's values at an intensity (0–100): numbers scale, choices and colours stay as they are. */
+function lookValues(id: string, intensity: number): Settings {
+  const look = LOOKS.find((l) => l.id === id);
+  if (!look) return {};
+  const out: Settings = {};
+  for (const [k, v] of Object.entries(look.settings)) out[k] = typeof v === "number" ? Math.round((v * intensity) / 100) : v;
+  return out;
+}
+
+/**
+ * Switches to another look (or none, with id ""). Only what the previous look set — and you haven't
+ * changed since — is taken back to neutral, so glasses, lipstick, hair colour or background you
+ * chose yourself survive a change of look.
+ */
+export function applyLook(current: Settings, id: string, intensity: number): Settings {
+  const next: Settings = { ...current };
+  const before = lookValues(str(current, "look"), typeof current.lookIntensidad === "number" ? current.lookIntensidad : 100);
+  for (const [k, v] of Object.entries(before)) if (next[k] === v) next[k] = defaultOf(k);
+  Object.assign(next, lookValues(id, intensity));
+  next.look = LOOKS.some((l) => l.id === id) ? id : "";
+  next.lookIntensidad = intensity;
+  return next;
+}

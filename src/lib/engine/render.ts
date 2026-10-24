@@ -268,11 +268,13 @@ function tint(
       if (a <= 0.002) continue;
       const i = ((m.y0 + y) * img.W + m.x0 + x) * 4;
       const r = img.d[i], g = img.d[i + 1], b = img.d[i + 2];
-      const [, sOld, l] = rgbToHsl(r, g, b);
+      const [hOld, sOld, l] = rgbToHsl(r, g, b);
       const target = clamp01(tl + (l - meanL) * texture);
       const nl = l + (target - l) * o.lightness;
       const ns = clamp01(ts * o.saturation + sOld * (1 - o.saturation));
-      const [nr, ng, nb] = hslToRgb(th, ns, nl);
+      // A near-grey colour (grey, white, black) has no real hue — HSL reports 0, which is red — so
+      // keep each pixel's own hue and only pull its saturation down; otherwise grey hair turns pink.
+      const [nr, ng, nb] = hslToRgb(ts < 0.12 ? hOld : th, ns, nl);
       if (o.keepHighlights) a *= 1 - o.keepHighlights * smoothstep(0.72, 0.95, l);
       a *= o.strength;
       img.d[i] = r + (nr - r) * a;

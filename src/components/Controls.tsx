@@ -1,6 +1,6 @@
 "use client";
 
-import { num, str, type ColorSpec, type Control, type Settings, type SliderSpec, type ChoiceSpec } from "@/lib/settings";
+import { defaultOf, num, str, type ColorSpec, type Control, type Settings, type SliderSpec, type ChoiceSpec } from "@/lib/settings";
 import { Icon } from "./Icon";
 
 type Props = { settings: Settings; onChange: (patch: Settings) => void; onCommit: () => void };
@@ -26,13 +26,13 @@ export function Slider({ spec, settings, onChange, onCommit, label }: Props & { 
         <span className="text-white/85">{label ?? spec.label}</span>
         <button
           type="button"
-          className={`tabular-nums ${value ? "text-fuchsia-300" : "text-white/40"}`}
+          className={`tabular-nums ${value !== defaultOf(spec.id) ? "text-fuchsia-300" : "text-white/40"}`}
           onClick={(e) => {
             e.preventDefault();
-            onChange({ [spec.id]: 0 });
+            onChange({ [spec.id]: defaultOf(spec.id) });
             onCommit();
           }}
-          title="Volver a 0"
+          title="Volver al valor normal"
         >
           {value > 0 && centred ? "+" : ""}
           {value}
@@ -53,9 +53,11 @@ export function Slider({ spec, settings, onChange, onCommit, label }: Props & { 
           value={value}
           onChange={(e) => onChange({ [spec.id]: Number(e.target.value) })}
           onPointerUp={onCommit}
+          onPointerCancel={onCommit}
+          onBlur={onCommit}
           onKeyUp={onCommit}
           onDoubleClick={() => {
-            onChange({ [spec.id]: 0 });
+            onChange({ [spec.id]: defaultOf(spec.id) });
             onCommit();
           }}
           aria-label={label ?? spec.label}
