@@ -19,8 +19,11 @@ y funciona sin conexión a partir de la segunda vez que la abres con conexión (
 - **Cabello:** color (modelo de segmentación, se carga solo al usarlo).
 - **Fondo:** desenfoque tipo retrato o color de fondo.
 - **Filtros y ajustes:** iluminación (estudio, lateral, hora dorada, dramática), brillo, contraste, saturación, calidez, luces, sombras, nitidez, viñeta.
-- Vista previa en vivo mientras mueves un deslizador; deshacer/rehacer (también las ediciones de IA), zoom con pellizco,
-  mantener pulsado para ver el original, guardar a resolución completa (hasta 12 MP) y compartir a Fotos.
+- **Recortar:** girar, voltear, proporciones (1:1, 4:5, 3:4, 9:16, 16:9) y acercar, centrado en la cara.
+- Vista previa en vivo mientras mueves un deslizador; deshacer/rehacer (también las ediciones de IA y los recortes),
+  zoom con pellizco, mantener pulsado para ver el antes o comparar con pantalla dividida, guardar a resolución
+  completa (hasta 12 MP), compartir a Fotos y guardar una imagen «antes y después».
+- Funciona en vertical y en horizontal.
 - Con varias personas en la foto, eliges a cuál aplicar los efectos (o a todas).
 - La edición en curso se guarda en el teléfono: si iOS cierra la app, al volver aparece «Continuar edición».
 
@@ -34,6 +37,12 @@ y funciona sin conexión a partir de la segunda vez que la abres con conexión (
 | `public/sw.js` | Modo sin conexión |
 
 `scripts/copy-vision.mjs` copia el runtime WebAssembly de MediaPipe a `public/vendor` (se ejecuta solo antes de `dev` y `build`). `scripts/make-icons.mjs` genera los iconos.
+
+## Privacidad
+
+La edición se hace en el teléfono. La página solo puede conectarse a su propio servidor (cabecera
+Content-Security-Policy `connect-src 'self'`): las fotos únicamente salen hacia Google cuando usas la
+pestaña IA, a través de `/api/ia`, que además rechaza peticiones de otras webs.
 
 ## Desarrollo
 

@@ -3,7 +3,8 @@
 // stored separately, so moving a slider doesn't rewrite megabytes of photos.
 import type { Settings } from "./settings";
 
-export type AiEdit = { group: string; label: string };
+/** An edit that produced a new base photo: an AI edit, or a crop ("recorte", with its parameters). */
+export type AiEdit = { group: string; label: string; params?: { rot: number; flip: boolean; aspect: string; zoom: number } };
 
 type StoredImages = { name: string; images: Blob[] };
 type StoredState = { edits: AiEdit[]; settings: Settings; thumb: string; updated: number };

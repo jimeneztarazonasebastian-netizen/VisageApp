@@ -167,9 +167,36 @@ function boxes(sigma: number): number[] {
   return out;
 }
 
+/** Exact separable Gaussian with a short kernel, for small sigmas the box passes can't represent. */
+function smallGaussian(a: Float32Array, w: number, h: number, sigma: number) {
+  const r = Math.max(1, Math.ceil(sigma * 3));
+  const k = new Float32Array(r * 2 + 1);
+  let sum = 0;
+  for (let i = -r; i <= r; i++) sum += k[i + r] = Math.exp(-(i * i) / (2 * sigma * sigma));
+  for (let i = 0; i < k.length; i++) k[i] /= sum;
+  const tmp = new Float32Array(a.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let i = -r; i <= r; i++) v += a[row + Math.min(w - 1, Math.max(0, x + i))] * k[i + r];
+      tmp[row + x] = v;
+    }
+  }
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let i = -r; i <= r; i++) v += tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x] * k[i + r];
+      a[y * w + x] = v;
+    }
+  return a;
+}
+
 /** Gaussian blur (three box passes) of a single-channel float image, in place. */
 export function gaussian(a: Float32Array, w: number, h: number, sigma: number) {
-  if (sigma < 0.3 || !w || !h) return a;
+  if (sigma < 0.15 || !w || !h) return a;
+  // Box passes need a radius of at least 1, i.e. sigma ≳ 1.15; below that use the exact kernel.
+  if (sigma < 1.2) return smallGaussian(a, w, h, sigma);
   const tmp = new Float32Array(a.length);
   for (const r of boxes(sigma)) {
     const rr = Math.round(r);

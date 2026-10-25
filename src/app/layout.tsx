@@ -8,8 +8,11 @@ export const metadata: Metadata = {
   title: "Visage · Editor de caras",
   description: "Edita tus selfies como en FaceApp: edad, sonrisa, retoque, forma, maquillaje, gafas, cabello, fondo y filtros.",
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Visage" },
-  icons: { apple: "/icons/apple-touch-icon.png" },
+  icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
   formatDetection: { telephone: false },
+  // Next only emits the newer "mobile-web-app-capable"; iOS still reads the Apple one for the
+  // full-screen home-screen app with the translucent status bar.
+  other: { "apple-mobile-web-app-capable": "yes" },
 };
 
 export const viewport: Viewport = {

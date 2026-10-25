@@ -38,7 +38,7 @@ export function Slider({ spec, settings, onChange, onCommit, label }: Props & { 
           {value}
         </button>
       </div>
-      <div className="relative h-7">
+      <div className="relative h-9">
         <div className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-white/15" />
         <div
           className="absolute top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500"

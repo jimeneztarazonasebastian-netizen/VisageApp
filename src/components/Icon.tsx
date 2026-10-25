@@ -64,6 +64,16 @@ const PATHS: Record<string, React.ReactNode> = {
       <path d="M17 3v3M15.5 4.5h3" />
     </>
   ),
+  crop: <path d="M6 2v14a2 2 0 002 2h14M2 6h14a2 2 0 012 2v14" />,
+  rotate: <path d="M20 11a8 8 0 10-2.3 5.7M20 4v7h-7" />,
+  flip: <path d="M12 3v18M8 7l-5 5 5 5V7zM16 7l5 5-5 5V7z" />,
+  split: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M12 2v20" />
+      <path d="M8.5 10l-2 2 2 2M15.5 10l2 2-2 2" />
+    </>
+  ),
   close: <path d="M6 6l12 12M18 6L6 18" />,
   undo: <path d="M9 14L4 9l5-5M4 9h10.5a5.5 5.5 0 010 11H11" />,
   redo: <path d="M15 14l5-5-5-5M20 9H9.5a5.5 5.5 0 000 11H13" />,

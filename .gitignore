@@ -46,3 +46,6 @@ next-env.d.ts
 # local test photos and tooling
 /public/test-fixtures
 /.claude
+
+# local audit report (describes how to abuse the API: keep it out of the public repo)
+AUDITORIA.md

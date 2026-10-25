@@ -1,23 +1,38 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * Shows the edited photo fitted to the available space. Pinch (or wheel) to zoom, drag to pan when
  * zoomed, double-tap to toggle 2.5×. Tapping and holding with one finger while not zoomed shows the
- * original, like FaceApp.
+ * original, like FaceApp. In split mode (`split` is a position 0–1), dragging moves the divider
+ * between the original and the edit instead.
  */
-export function Viewer({ canvas, onHoldChange }: { canvas: React.RefObject<HTMLCanvasElement | null>; onHoldChange: (holding: boolean) => void }) {
+export function Viewer({
+  canvas,
+  onHoldChange,
+  split,
+  onSplit,
+}: {
+  canvas: React.RefObject<HTMLCanvasElement | null>;
+  onHoldChange: (holding: boolean) => void;
+  split: number | null;
+  onSplit: (position: number) => void;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const [t, setT] = useState({ k: 1, x: 0, y: 0 });
+  const [pinching, setPinching] = useState(false);
   const tRef = useRef(t);
-  tRef.current = t;
+  useLayoutEffect(() => {
+    tRef.current = t;
+  }, [t]);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{ dist: number; k: number; cx: number; cy: number; x: number; y: number } | null>(null);
   const holdTimer = useRef<number | undefined>(undefined);
   const holding = useRef(false);
   const lastTap = useRef(0);
   const moved = useRef(false);
+  const splitting = split !== null;
 
   const clampT = (k: number, x: number, y: number) => {
     const el = box.current;
@@ -32,6 +47,13 @@ export function Viewer({ canvas, onHoldChange }: { canvas: React.RefObject<HTMLC
       holding.current = false;
       onHoldChange(false);
     }
+  };
+
+  /** Divider position under the finger, as a fraction of the photo's width. */
+  const splitAt = (clientX: number) => {
+    const r = canvas.current?.getBoundingClientRect();
+    if (!r || !r.width) return;
+    onSplit(Math.min(1, Math.max(0, (clientX - r.left) / r.width)));
   };
 
   useEffect(() => {
@@ -50,14 +72,23 @@ export function Viewer({ canvas, onHoldChange }: { canvas: React.RefObject<HTMLC
   }, []);
 
   const down = (e: React.PointerEvent) => {
-    (e.target as Element).setPointerCapture?.(e.pointerId);
+    try {
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+    } catch {
+      // not capturable (e.g. the pointer is already gone): the gesture still works without it
+    }
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     moved.current = false;
+    if (splitting && pointers.current.size === 1) {
+      splitAt(e.clientX);
+      return;
+    }
     if (pointers.current.size === 2) {
       stopHold();
       const [a, b] = [...pointers.current.values()];
       const r = box.current!.getBoundingClientRect();
       gesture.current = { dist: Math.hypot(a.x - b.x, a.y - b.y), k: tRef.current.k, cx: (a.x + b.x) / 2 - r.left - r.width / 2, cy: (a.y + b.y) / 2 - r.top - r.height / 2, x: tRef.current.x, y: tRef.current.y };
+      setPinching(true);
     } else if (pointers.current.size === 1) {
       gesture.current = null;
       if (tRef.current.k <= 1) {
@@ -75,6 +106,10 @@ export function Viewer({ canvas, onHoldChange }: { canvas: React.RefObject<HTMLC
     const cur = { x: e.clientX, y: e.clientY };
     pointers.current.set(e.pointerId, cur);
     if (Math.hypot(cur.x - prev.x, cur.y - prev.y) > 2) moved.current = true;
+    if (splitting && pointers.current.size === 1) {
+      splitAt(e.clientX);
+      return;
+    }
     if (pointers.current.size === 2 && gesture.current) {
       const [a, b] = [...pointers.current.values()];
       const g = gesture.current;
@@ -90,7 +125,11 @@ export function Viewer({ canvas, onHoldChange }: { canvas: React.RefObject<HTMLC
 
   const up = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
-    if (pointers.current.size < 2) gesture.current = null;
+    if (pointers.current.size < 2) {
+      gesture.current = null;
+      setPinching(false);
+    }
+    if (splitting) return;
     const wasHolding = holding.current;
     stopHold();
     if (pointers.current.size === 0 && !moved.current && !wasHolding) {
@@ -115,7 +154,7 @@ export function Viewer({ canvas, onHoldChange }: { canvas: React.RefObject<HTMLC
       onPointerCancel={up}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="flex h-full w-full items-center justify-center" style={{ transform: `translate(${t.x}px, ${t.y}px) scale(${t.k})`, transition: gesture.current ? "none" : "transform 60ms linear" }}>
+      <div className="flex h-full w-full items-center justify-center" style={{ transform: `translate(${t.x}px, ${t.y}px) scale(${t.k})`, transition: pinching ? "none" : "transform 60ms linear" }}>
         <canvas ref={canvas} className="max-h-full max-w-full object-contain" />
       </div>
       {t.k > 1 && (

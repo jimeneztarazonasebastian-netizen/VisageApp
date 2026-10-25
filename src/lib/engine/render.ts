@@ -4,7 +4,7 @@
 import * as L from "../landmarks";
 import { num, str, type Settings } from "../settings";
 import type { Face, Mask, Segmentation } from "../vision";
-import { clamp, clamp01, hexToRgb, hslToRgb, luma, rgbToHsl, smoothstep, softLight } from "./color";
+import { clamp01, hexToRgb, hslToRgb, luma, rgbToHsl, smoothstep, softLight } from "./color";
 import {
   blurRegion,
   bounds,
@@ -258,7 +258,8 @@ function tint(
       const a = m.a[y * m.w + x];
       if (a <= 0.05) continue;
       const i = ((m.y0 + y) * img.W + m.x0 + x) * 4;
-      sum += luma(img.d[i], img.d[i + 1], img.d[i + 2]) * a;
+      const r = img.d[i], g = img.d[i + 1], b = img.d[i + 2];
+      sum += ((Math.max(r, g, b) + Math.min(r, g, b)) / 2) * a; // HSL lightness, as used per pixel below
       wsum += a;
     }
   if (!wsum) return;
@@ -308,8 +309,8 @@ function skinMask(img: Img, g: Geo, seg: Segmentation | null, field: Field | nul
   const holes: [number[], number][] = [
     [L.EYE_L, 1.45],
     [L.EYE_R, 1.45],
-    [L.BROW_L, 1.2],
-    [L.BROW_R, 1.2],
+    [L.BROW_L, 1.45],
+    [L.BROW_R, 1.45],
     [L.LIPS_OUTER, 1.08],
   ];
   for (const [idx, k] of holes) fillPolygon(r, smoothClosed(scalePoly(pick(p, idx), k)), -1);
@@ -417,7 +418,10 @@ function retouch(img: Img, g: Geo, s: Settings, seg: Segmentation | null, field:
     for (let k = 0; k < pl.Y.length; k++) {
       const a = m.a[k] * light;
       if (a <= 0) continue;
-      pl.Y[k] += (255 - pl.Y[k]) * 0.16 * a;
+      // Proportional lift with a soft shoulder: the same relative brightening on every skin tone
+      // (adding towards white lifted dark skin three times more and turned it ashen).
+      const y = pl.Y[k];
+      pl.Y[k] = y + Math.min(y * 0.14, (255 - y) * 0.6) * a;
     }
   }
   commit(img, m, pl, m);
@@ -668,33 +672,37 @@ const FRAME_RGB: Record<string, RGB> = { "": [18, 18, 20], carey: [74, 42, 20], 
 function glasses(img: Img, g: Geo, style: GlassStyle, color: string) {
   const { p, ex, ey, eyeW } = g;
   const up = mul(ey, -1);
-  const centres = p.length > L.IRIS_R ? [p[L.IRIS_L], p[L.IRIS_R]] : [centroid(pick(p, L.EYE_L)), centroid(pick(p, L.EYE_R))];
+  // Glasses sit on the face, not on the gaze: centre each lens between the eye's corners. On a
+  // three-quarter view the far eye looks narrower, and so should its lens.
+  const centres = [mid(p[L.EYE_OUTER_L], p[L.EYE_INNER_L]), mid(p[L.EYE_OUTER_R], p[L.EYE_INNER_R])];
+  const widths = [dist(p[L.EYE_OUTER_L], p[L.EYE_INNER_L]), dist(p[L.EYE_OUTER_R], p[L.EYE_INNER_R])].map((w) => Math.max(w, eyeW * 0.55));
   const sides = [p[L.FACE_SIDE_L], p[L.FACE_SIDE_R]];
   const lenses: P[][] = [];
   const frames: P[][] = [];
-  const at = (c: P, out: number, u: number, v: number) => {
+  const at = (c: P, out: number, u: number, v: number, w = eyeW) => {
     const [su, sv] = style.shape(u, v);
-    return add(add(c, mul(ex, out * su * style.w * eyeW * 0.5)), mul(ey, sv * style.h * eyeW * 0.5));
+    return add(add(c, mul(ex, out * su * style.w * w * 0.5)), mul(ey, sv * style.h * eyeW * 0.5));
   };
   centres.forEach((c0, k) => {
+    const wk = widths[k];
     const out = k === 0 ? -1 : 1; // outward from the nose
     const c = add(c0, mul(up, 0.06 * eyeW));
     const poly: P[] = [];
     for (let i = 0; i < 72; i++) {
       const t = (i / 72) * Math.PI * 2;
       const ct = Math.cos(t), st = Math.sin(t);
-      poly.push(at(c, out, Math.sign(ct) * Math.abs(ct) ** (2 / style.n), Math.sign(st) * Math.abs(st) ** (2 / style.n)));
+      poly.push(at(c, out, Math.sign(ct) * Math.abs(ct) ** (2 / style.n), Math.sign(st) * Math.abs(st) ** (2 / style.n), wk));
     }
     lenses.push(poly);
     frames.push([...poly, poly[0]]);
     // Temple arm from the top outer corner back towards the ear, ending at the side of the face.
-    const hinge = at(c, out, 1, -0.45);
+    const hinge = at(c, out, 1, -0.45, wk);
     const reach = Math.max(0, dot(sub(sides[k], hinge), mul(ex, out))) * 0.97;
     if (reach > 0) frames.push([hinge, add(hinge, mul(ex, out * reach))]);
   });
   // Bridge over the nose.
   const lc = add(centres[0], mul(up, 0.06 * eyeW)), rc = add(centres[1], mul(up, 0.06 * eyeW));
-  const bl = at(lc, -1, -0.97, -0.35), br = at(rc, 1, -0.97, -0.35);
+  const bl = at(lc, -1, -0.97, -0.35, widths[0]), br = at(rc, 1, -0.97, -0.35, widths[1]);
   frames.push(smoothOpen([bl, add(mid(bl, br), mul(up, 0.12 * eyeW)), br], 6));
 
   const all = [...lenses.flat(), ...frames.flat()];

@@ -38,4 +38,18 @@ const jobs = [
 for (const [name, size, opts] of jobs) await sharp(Buffer.from(icon(opts))).resize(size, size).png().toFile(join(out, name));
 await sharp(Buffer.from(icon())).resize(64, 64).png().toFile(join(process.cwd(), "src", "app", "icon.png"));
 writeFileSync(join(out, "logo.svg"), icon());
+
+// favicon.ico for browsers that ask for it by name: an ICO container holding one 32×32 PNG.
+const png = await sharp(Buffer.from(icon())).resize(32, 32).png().toBuffer();
+const ico = Buffer.alloc(22);
+ico.writeUInt16LE(0, 0); // reserved
+ico.writeUInt16LE(1, 2); // type: icon
+ico.writeUInt16LE(1, 4); // one image
+ico.writeUInt8(32, 6); // width
+ico.writeUInt8(32, 7); // height
+ico.writeUInt16LE(1, 10); // colour planes
+ico.writeUInt16LE(32, 12); // bits per pixel
+ico.writeUInt32LE(png.length, 14);
+ico.writeUInt32LE(22, 18); // data offset
+writeFileSync(join(process.cwd(), "public", "favicon.ico"), Buffer.concat([ico, png]));
 console.log("iconos creados en public/icons");
