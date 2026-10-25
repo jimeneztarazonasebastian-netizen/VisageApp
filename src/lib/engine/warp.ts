@@ -5,7 +5,9 @@ import type { P } from "./raster";
 
 export type WarpOp =
   | { kind: "move"; c: P; r: number; v: P }
-  | { kind: "scale"; c: P; r: number; s: number; sx?: number; sy?: number };
+  | { kind: "scale"; c: P; r: number; s: number }
+  /** Scales only along the unit axis `u` (e.g. the face's vertical axis, which follows a tilted head). */
+  | { kind: "stretch"; c: P; r: number; s: number; u: P };
 
 export type Field = { x0: number; y0: number; w: number; h: number; dx: Float32Array; dy: Float32Array };
 
@@ -23,9 +25,13 @@ function addOp(op: WarpOp, x: number, y: number, out: { x: number; y: number }) 
   if (op.kind === "move") {
     out.x -= op.v.x * w;
     out.y -= op.v.y * w;
+  } else if (op.kind === "scale") {
+    out.x -= ex * op.s * w;
+    out.y -= ey * op.s * w;
   } else {
-    out.x -= ex * op.s * (op.sx ?? 1) * w;
-    out.y -= ey * op.s * (op.sy ?? 1) * w;
+    const along = (ex * op.u.x + ey * op.u.y) * op.s * w;
+    out.x -= op.u.x * along;
+    out.y -= op.u.y * along;
   }
 }
 
@@ -35,12 +41,15 @@ export function displacementAt(ops: WarpOp[], x: number, y: number) {
   return d;
 }
 
-/** Where a point of the original ends up after the warp (inverts the backward map iteratively). */
+/**
+ * Where a point of the original ends up after the warp: solves p + D(p) = q by damped fixed-point
+ * iteration (undamped, strong overlapping pulls can oscillate instead of converging).
+ */
 export function forward(ops: WarpOp[], q: P): P {
   let p = { x: q.x, y: q.y };
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 14; i++) {
     const d = displacementAt(ops, p.x, p.y);
-    p = { x: q.x - d.x, y: q.y - d.y };
+    p = { x: p.x + 0.7 * (q.x - d.x - p.x), y: p.y + 0.7 * (q.y - d.y - p.y) };
   }
   return p;
 }
@@ -78,14 +87,58 @@ export function buildField(ops: WarpOp[], W: number, H: number): Field | null {
         if (op.kind === "move") {
           dx[k] -= op.v.x * f;
           dy[k] -= op.v.y * f;
+        } else if (op.kind === "scale") {
+          dx[k] -= ex * op.s * f;
+          dy[k] -= ey * op.s * f;
         } else {
-          dx[k] -= ex * op.s * (op.sx ?? 1) * f;
-          dy[k] -= ey * op.s * (op.sy ?? 1) * f;
+          const along = (ex * op.u.x + ey * op.u.y) * op.s * f;
+          dx[k] -= op.u.x * along;
+          dy[k] -= op.u.y * along;
         }
       }
     }
   }
   return { x0: fx0, y0: fy0, w, h, dx, dy };
+}
+
+/** Smallest Jacobian determinant of the map p → p + s·D(p): at or below 0 the picture folds over. */
+function minDeterminant(f: Field, s: number) {
+  let min = Infinity;
+  const { w, h, dx, dy } = f;
+  for (let y = 0; y < h - 1; y++)
+    for (let x = 0; x < w - 1; x++) {
+      const k = y * w + x;
+      const a = 1 + s * (dx[k + 1] - dx[k]), b = s * (dx[k + w] - dx[k]);
+      const c = s * (dy[k + 1] - dy[k]), d = 1 + s * (dy[k + w] - dy[k]);
+      const det = a * d - b * c;
+      if (det < min) min = det;
+    }
+  return min;
+}
+
+const scaleOp = (op: WarpOp, k: number): WarpOp => (op.kind === "move" ? { ...op, v: { x: op.v.x * k, y: op.v.y * k } } : { ...op, s: op.s * k });
+
+/**
+ * Builds the field, and if the summed pulls are strong enough to fold the picture (several shape
+ * sliders at extremes on the same area), tones every pull down just enough to keep it a clean,
+ * one-to-one warp. Returns the ops actually used, so landmarks are moved consistently.
+ */
+export function buildSafeField(ops: WarpOp[], W: number, H: number): { field: Field | null; ops: WarpOp[] } {
+  const field = buildField(ops, W, H);
+  // Below ~0.35 the warp is not folded yet but stretches a thin strip into visible streaks.
+  const LIMIT = 0.35;
+  if (!field || minDeterminant(field, 1) >= LIMIT) return { field, ops };
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 7; i++) {
+    const mid = (lo + hi) / 2;
+    if (minDeterminant(field, mid) >= LIMIT) lo = mid;
+    else hi = mid;
+  }
+  for (let k = 0; k < field.dx.length; k++) {
+    field.dx[k] *= lo;
+    field.dy[k] *= lo;
+  }
+  return { field, ops: ops.map((op) => scaleOp(op, lo)) };
 }
 
 /** Applies the field to an RGBA image (bilinear sampling); pixels outside the field are copied. */

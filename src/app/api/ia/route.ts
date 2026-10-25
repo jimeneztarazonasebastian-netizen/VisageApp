@@ -68,8 +68,14 @@ function findText(node: unknown): string {
 
 type Attempt = { ok: true; image: Found } | { ok: false; status: number; message: string; refused?: boolean };
 
-async function call(url: string, key: string, body: unknown): Promise<Attempt> {
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": key }, body: JSON.stringify(body) });
+async function call(url: string, key: string, body: unknown, signal: AbortSignal): Promise<Attempt> {
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": key }, body: JSON.stringify(body), signal });
+  } catch (e) {
+    const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+    return { ok: false, status: timedOut ? 504 : 502, message: timedOut ? "timeout" : "network" };
+  }
   const json = await res.json().catch(() => null);
   if (!res.ok) {
     // Errors come as { error } from generateContent and as [{ error }] from the Interactions API.
@@ -100,6 +106,14 @@ function generateContent(prompt: string, img: Found, ratio: string) {
     contents: [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: img.mime, data: img.data } }] }],
     generationConfig: { responseModalities: ["IMAGE"], imageConfig: { aspectRatio: ratio } },
   };
+}
+
+/** Spanish explanation of why Gemini returned no image (safety blocks come as codes in English). */
+function refusalMessage(text: string) {
+  if (/RECITATION/.test(text)) return "Gemini no hizo esta edición porque el resultado se parecía demasiado a una imagen existente. Prueba con otra opción.";
+  if (/SAFETY|PROHIBITED|BLOCKLIST|SPII/.test(text))
+    return "Gemini rechazó esta edición por sus normas de seguridad (pasa a veces con fotos de personas reales). Prueba con otra opción u otra foto.";
+  return "Gemini no devolvió ninguna imagen esta vez. Vuelve a intentarlo o prueba con otra opción.";
 }
 
 /** A missing model or an unsupported field means "try the next way", anything else is final. */
@@ -139,41 +153,60 @@ export async function POST(req: Request) {
   const ratio = closestRatio(body.width || 3, body.height || 4);
   const models = [...new Set([process.env.GEMINI_IMAGE_MODEL, "gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-2.5-flash-image"].filter(Boolean) as string[])];
 
+  // Stay under the function's time limit (maxDuration 120 s) whatever happens upstream.
+  const deadline = Date.now() + 100_000;
   let last: Attempt | null = null;
   const quota: string[] = [];
-  for (const model of models) {
+  let overloaded = false;
+  outer: for (const model of models) {
     for (const attempt of [
-      () => call(`${API}/interactions`, key, interactions(model, prompt, img, ratio)),
-      () => call(`${API}/models/${model}:generateContent`, key, generateContent(prompt, img, ratio)),
+      (signal: AbortSignal) => call(`${API}/interactions`, key, interactions(model, prompt, img, ratio), signal),
+      (signal: AbortSignal) => call(`${API}/models/${model}:generateContent`, key, generateContent(prompt, img, ratio), signal),
     ]) {
-      last = await attempt();
+      const remaining = deadline - Date.now();
+      if (remaining < 5_000) {
+        last = { ok: false, status: 504, message: "timeout" };
+        break outer;
+      }
+      // Also stops (and stops being billed) when the phone cancels or goes away.
+      last = await attempt(AbortSignal.any([req.signal, AbortSignal.timeout(remaining)]));
       if (last.ok) return Response.json({ image: last.image.data, mime: last.image.mime, model });
+      if (req.signal.aborted) return reply(499, "Cancelado.");
       if (!tryNext(last)) break;
     }
-    // Quotas are per model (the free tier may cover one image model and not another), so a 429
-    // moves on to the next model; anything else that isn't "try another way" is final.
-    if (last && !last.ok && last.status === 429) {
+    if (!last || last.ok) break;
+    // Quotas are per model: when this one has none on the free tier ("limit: 0"), another may.
+    // A real rate limit is final, though: hopping to a pricier model would cost more.
+    if (last.status === 429) {
       quota.push(`${model}: ${last.message}`);
+      if (/free.?tier|limit: ?0/i.test(last.message)) continue;
+      break;
+    }
+    // "The model is overloaded" and other upstream hiccups: the next model may be fine.
+    if (last.status === 500 || last.status === 502 || last.status === 503) {
+      overloaded = true;
       continue;
     }
-    if (last && !last.ok && !tryNext(last)) break;
+    if (!tryNext(last)) break;
   }
 
   if (!last || last.ok) return reply(502, "No se pudo generar la imagen.");
-  if (last.refused) return reply(422, `Gemini no hizo esta edición. ${last.message}`.trim());
+  if (last.refused) return reply(422, refusalMessage(last.message));
+  const freeTier = quota.some((q) => /free.?tier|limit: ?0/i.test(q));
   if (last.status === 400 && /api key/i.test(last.message)) return reply(502, "La llave de Gemini no es válida.");
   if (last.status === 401 || last.status === 403) return reply(502, "La llave de Gemini no es válida o no tiene permiso para este modelo.");
-  if (last.status === 429) {
-    const free = quota.some((q) => /free.?tier|limit: ?0/i.test(q));
+  if (last.status === 504) return reply(504, "La IA tardó demasiado en responder. Vuelve a intentarlo.");
+  // The quota explanation wins over whatever the last fallback model said (e.g. "not found").
+  if (freeTier || last.status === 429)
     return Response.json(
       {
-        error: free
+        error: freeTier
           ? "Tu llave de Gemini está en el plan gratuito y no tiene cuota para generar imágenes. Activa la facturación en Google AI Studio (Billing) y vuelve a intentarlo."
           : "Se alcanzó el límite de uso de Gemini. Espera un minuto o revisa tu cuota en Google AI Studio.",
         details: quota.map((q) => q.slice(0, 400)),
       },
       { status: 429 },
     );
-  }
-  return reply(502, `Error de Gemini (${last.status}): ${last.message}`);
+  if (overloaded || last.status >= 500) return reply(503, "Gemini está saturado ahora mismo. Vuelve a intentarlo en un minuto.");
+  return reply(502, `Gemini respondió con un error (${last.status}). Vuelve a intentarlo.`);
 }

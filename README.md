@@ -2,7 +2,7 @@
 
 Editor de caras al estilo FaceApp, pensado para el iPhone. Casi todo se procesa en el navegador; solo
 la pestaña **IA** envía la foto a Gemini (Google). Se instala como app desde Safari (Compartir → «Añadir a pantalla de inicio»)
-y funciona sin conexión después de la primera carga.
+y funciona sin conexión a partir de la segunda vez que la abres con conexión (la primera descarga el motor y el modelo de caras).
 
 ## Qué hace
 
@@ -19,7 +19,10 @@ y funciona sin conexión después de la primera carga.
 - **Cabello:** color (modelo de segmentación, se carga solo al usarlo).
 - **Fondo:** desenfoque tipo retrato o color de fondo.
 - **Filtros y ajustes:** iluminación (estudio, lateral, hora dorada, dramática), brillo, contraste, saturación, calidez, luces, sombras, nitidez, viñeta.
-- Deshacer/rehacer, zoom con pellizco, mantener pulsado para ver el original, guardar a resolución completa (hasta 12 MP) y compartir a Fotos.
+- Vista previa en vivo mientras mueves un deslizador; deshacer/rehacer (también las ediciones de IA), zoom con pellizco,
+  mantener pulsado para ver el original, guardar a resolución completa (hasta 12 MP) y compartir a Fotos.
+- Con varias personas en la foto, eliges a cuál aplicar los efectos (o a todas).
+- La edición en curso se guarda en el teléfono: si iOS cierra la app, al volver aparece «Continuar edición».
 
 ## Cómo funciona
 
@@ -51,5 +54,6 @@ Importa el repositorio en Vercel y añade en **Settings → Environment Variable
 
 Después de añadirlas, vuelve a desplegar (Deployments → Redeploy).
 
-Cada edición con IA cuesta del orden de US$0,04 con Nano Banana. La IA trabaja sobre una copia de hasta
-1536 px y devuelve una imagen de ~2K, que pasa a ser la foto base sobre la que siguen funcionando los ajustes.
+Cada edición con IA cuesta del orden de US$0,04–0,10. Para las ediciones de cara (edad, género, barba, peinado,
+sonrisa…) la app envía solo un recorte de la cabeza y funde el resultado en la foto original, que conserva su
+resolución; una nueva opción del mismo grupo sustituye a la anterior y Deshacer también quita la IA.

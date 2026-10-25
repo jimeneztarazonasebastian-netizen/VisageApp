@@ -19,7 +19,7 @@ import {
   type P,
   type Region,
 } from "./raster";
-import { applyField, buildField, forward, sourceOf, type Field, type WarpOp } from "./warp";
+import { applyField, buildSafeField, forward, sourceOf, type Field, type WarpOp } from "./warp";
 
 export type RenderInput = {
   data: Uint8ClampedArray;
@@ -30,7 +30,7 @@ export type RenderInput = {
   settings: Settings;
 };
 
-type Geo = {
+export type Geo = {
   p: P[];
   ex: P; // across the face, image-left → image-right
   ey: P; // down the face, forehead → chin
@@ -141,13 +141,17 @@ function warpOps(g: Geo, s: Settings): WarpOp[] {
   const lips = v(s, "labios");
   if (lips) {
     const c = mid(p[L.LIP_TOP_INNER], p[L.LIP_BOTTOM_INNER]);
-    // Stretch only along the face's vertical axis, so the mouth gets fuller without getting wider.
-    ops.push({ kind: "scale", c, r: mouthW * 0.7, s: 0.2 * lips, sx: Math.abs(ey.x), sy: Math.abs(ey.y) });
+    // Stretch only along the face's vertical axis, so the mouth gets fuller without getting wider
+    // (also with the head tilted).
+    ops.push({ kind: "stretch", c, r: mouthW * 0.7, s: 0.2 * lips, u: ey });
   }
 
-  const brows = v(s, "cejas");
-  if (brows) {
-    for (const i of [...L.BROW_L.slice(0, 5), ...L.BROW_R.slice(0, 5)]) ops.push({ kind: "move", c: p[i], r: eyeW * 0.42, v: mul(up, 0.09 * eyeW * brows) });
+  // Brow lift from "Subir cejas" and "Sorpresa" together, as one set of pulls: neighbouring brow
+  // points overlap (about 1.5× where they meet), so each pull is scaled down to that, and the total
+  // is capped so the two sliders at +100 don't streak the forehead.
+  const browLift = Math.max(-0.12, Math.min(0.17, 0.09 * v(s, "cejas") + 0.16 * v(s, "sorpresa"))) / 1.5;
+  if (browLift) {
+    for (const i of [...L.BROW_L.slice(0, 5), ...L.BROW_R.slice(0, 5)]) ops.push({ kind: "move", c: p[i], r: eyeW * 0.55, v: mul(up, browLift * eyeW) });
   }
 
   // Weight: cheeks and jaw puff out (or hollow in) the way the soft tissue does, more at the bottom.
@@ -162,14 +166,12 @@ function warpOps(g: Geo, s: Settings): WarpOp[] {
   }
 
   // Surprise: brows up, eyes wider open.
+  // Surprise: brows up (in browLift above) and eyes wider open.
   const surprise = v(s, "sorpresa");
   const openEyes = v(s, "abrirOjos") + surprise * 0.8;
-  if (surprise) {
-    for (const i of [...L.BROW_L.slice(0, 5), ...L.BROW_R.slice(0, 5)]) ops.push({ kind: "move", c: p[i], r: eyeW * 0.45, v: mul(up, 0.16 * eyeW * surprise) });
-  }
   if (openEyes) {
     const centres = p.length > L.IRIS_R ? [p[L.IRIS_L], p[L.IRIS_R]] : [centroid(pick(p, L.EYE_L)), centroid(pick(p, L.EYE_R))];
-    for (const c of centres) ops.push({ kind: "scale", c, r: eyeW * 0.85, s: 0.22 * Math.max(-1, Math.min(1.2, openEyes)), sx: Math.abs(ey.x), sy: Math.abs(ey.y) });
+    for (const c of centres) ops.push({ kind: "stretch", c, r: eyeW * 0.85, s: 0.22 * Math.max(-1, Math.min(1.2, openEyes)), u: ey });
   }
 
   // Frown: inner brow ends down and towards each other, outer ends slightly up.
@@ -320,7 +322,9 @@ function skinMask(img: Img, g: Geo, seg: Segmentation | null, field: Field | nul
         const k = y * r.w + x;
         if (r.a[k] <= 0) continue;
         const skin = maskAt(seg.faceSkin, img, field, r.x0 + x, r.y0 + y) + maskAt(seg.bodySkin, img, field, r.x0 + x, r.y0 + y);
-        r.a[k] *= smoothstep(0.15, 0.6, skin);
+        // Real glasses and other accessories are not skin: retouching would fade their frames.
+        const acc = seg.accessories ? maskAt(seg.accessories, img, field, r.x0 + x, r.y0 + y) : 0;
+        r.a[k] *= smoothstep(0.15, 0.6, skin) * (1 - smoothstep(0.25, 0.6, acc));
       }
   }
   return r;
@@ -365,7 +369,10 @@ function retouch(img: Img, g: Geo, s: Settings, seg: Segmentation | null, field:
     for (let k = 0; k < pl.Y.length; k++) {
       const a = m.a[k] * wrinkles;
       if (a <= 0) continue;
-      pl.Y[k] += lift[k] * a * 1.6;
+      // Wrinkles are shallow; much deeper dark lines are glasses frames, nostrils or lash lines,
+      // which must stay — so the correction fades out as the line gets deeper.
+      const l = lift[k];
+      pl.Y[k] += l * a * 1.6 * (1 - smoothstep(14, 30, l));
     }
   }
 
@@ -379,7 +386,8 @@ function retouch(img: Img, g: Geo, s: Settings, seg: Segmentation | null, field:
     for (let k = 0; k < pl.Y.length; k++) {
       const a = m.a[k] * even;
       if (a <= 0) continue;
-      pl.Y[k] += Math.max(0, lowY[k] - midY[k]) * a * 0.85;
+      const spot = Math.max(0, lowY[k] - midY[k]);
+      pl.Y[k] += spot * a * 0.85 * (1 - smoothstep(16, 34, spot)); // spots yes, deep shadows no
       pl.Cr[k] += (lowCr[k] - midCr[k]) * a * 0.7;
     }
   }
@@ -781,28 +789,31 @@ function lighting(img: Img, geos: Geo[], kind: string, amt: number) {
     const eyes = mid(centroid(pick(g.p, L.EYE_L)), centroid(pick(g.p, L.EYE_R)));
     return { m, c: add(eyes, mul(g.ey, 0.25 * g.faceH)), ex: g.ex, r: g.faceW * 0.62 };
   });
+  /** Face weight here, and position across / distance from the faces, blended by weight. */
   const faceAt = (x: number, y: number) => {
-    let best = 0, lit: Lit | null = null;
+    let best = 0, wsum = 0, u = 0, rad = 0;
     for (const l of lits) {
       const lx = x - l.m.x0, ly = y - l.m.y0;
       if (lx < 0 || ly < 0 || lx >= l.m.w || ly >= l.m.h) continue;
       const v = l.m.a[ly * l.m.w + lx];
-      if (v > best) {
-        best = v;
-        lit = l;
-      }
+      if (v <= 0) continue;
+      best = Math.max(best, v);
+      wsum += v;
+      u += v * (((x - l.c.x) * l.ex.x + (y - l.c.y) * l.ex.y) / l.r);
+      rad += v * (Math.hypot(x - l.c.x, y - l.c.y) / l.r);
     }
-    return { m: best, lit };
+    return wsum ? { m: best, u: u / wsum, rad: rad / wsum } : { m: 0, u: 0, rad: 1 };
   };
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
       const i = (y * W + x) * 4;
-      const { m, lit } = faceAt(x, y);
+      const { m, u: uFace, rad } = faceAt(x, y);
       let r = d[i], g = d[i + 1], b = d[i + 2];
-      // Position across the face (−1 image-left … 1 image-right) and distance from its centre.
-      const u = lit ? dot(sub({ x, y }, lit.c), lit.ex) / lit.r : (x / W) * 2 - 1;
-      const rad = lit ? Math.hypot(x - lit.c.x, y - lit.c.y) / lit.r : 1;
-      const gx = (x / W) * 2 - 1;
+      // Position across the face (−1 image-left … 1 image-right), easing into the picture-wide
+      // direction outside the face so there is no step at its edge.
+      const gxAll = (x / W) * 2 - 1;
+      const u = gxAll + (uFace - gxAll) * smoothstep(0, 0.6, m);
+      const gx = gxAll;
       if (kind === "estudio") {
         const key = m * Math.max(0, 1 - rad * rad);
         const k = 1 + amt * (0.16 * key);
@@ -810,7 +821,7 @@ function lighting(img: Img, geos: Geo[], kind: string, amt: number) {
         g = g * k + amt * m * (255 - g) * 0.06;
         b = b * k + amt * m * (255 - b) * 0.06;
       } else if (kind === "lateral" || kind === "dorada") {
-        const side = -Math.max(-1, Math.min(1, m > 0.05 ? u : gx));
+        const side = -Math.max(-1, Math.min(1, u));
         const k = 1 + amt * (0.24 * side * Math.max(m, 0.35));
         r *= k; g *= k; b *= k;
         if (kind === "dorada") {
@@ -830,15 +841,37 @@ function lighting(img: Img, geos: Geo[], kind: string, amt: number) {
 
 // ───────────────────────────── segmentation ─────────────────────────────
 
-function hairColor(img: Img, seg: Segmentation, field: Field | null, hex: string, amt: number) {
-  const m = emptyRegion({ x0: 0, y0: 0, w: img.W, h: img.H });
+type Box = { x0: number; y0: number; x1: number; y1: number };
+
+function hairColor(img: Img, seg: Segmentation, field: Field | null, hex: string, amt: number, limit?: Box) {
+  // Work only where there is hair (found on the small mask), plus a margin for the reshaping.
+  const mk = seg.hair;
+  let mx0 = mk.width, my0 = mk.height, mx1 = -1, my1 = -1;
+  for (let y = 0; y < mk.height; y++)
+    for (let x = 0; x < mk.width; x++)
+      if (mk.data[y * mk.width + x] >= 0.12) {
+        if (x < mx0) mx0 = x;
+        if (x > mx1) mx1 = x;
+        if (y < my0) my0 = y;
+        if (y > my1) my1 = y;
+      }
+  if (mx1 < 0) return;
+  const sx = img.W / mk.width, sy = img.H / mk.height, pad = Math.max(img.W, img.H) * 0.03;
+  let x0 = Math.max(0, Math.floor(mx0 * sx - pad)), y0 = Math.max(0, Math.floor(my0 * sy - pad));
+  let x1 = Math.min(img.W, Math.ceil((mx1 + 1) * sx + pad)), y1 = Math.min(img.H, Math.ceil((my1 + 1) * sy + pad));
+  if (limit) {
+    x0 = Math.max(x0, Math.floor(limit.x0)); y0 = Math.max(y0, Math.floor(limit.y0));
+    x1 = Math.min(x1, Math.ceil(limit.x1)); y1 = Math.min(y1, Math.ceil(limit.y1));
+  }
+  if (x1 <= x0 || y1 <= y0) return;
+  const m = emptyRegion({ x0, y0, w: x1 - x0, h: y1 - y0 });
   let any = false;
-  for (let y = 0; y < img.H; y++)
-    for (let x = 0; x < img.W; x++) {
+  for (let y = y0; y < y1; y++)
+    for (let x = x0; x < x1; x++) {
       const hm = maskAt(seg.hair, img, field, x, y);
       if (hm < 0.12) continue;
       const fs = maskAt(seg.faceSkin, img, field, x, y);
-      m.a[y * img.W + x] = smoothstep(0.2, 0.8, hm) * (1 - smoothstep(0.3, 0.7, fs));
+      m.a[(y - y0) * m.w + (x - x0)] = smoothstep(0.2, 0.8, hm) * (1 - smoothstep(0.3, 0.7, fs));
       any = true;
     }
   if (!any) return;
@@ -905,92 +938,126 @@ function background(img: Img, seg: Segmentation, field: Field | null, blurAmt: n
 // ───────────────────────────── global ─────────────────────────────
 
 type RGB = [number, number, number];
-const gray = (r: number, g: number, b: number) => luma(r, g, b);
-const sat = (c: RGB, k: number): RGB => {
-  const y = gray(...c);
-  return [y + (c[0] - y) * k, y + (c[1] - y) * k, y + (c[2] - y) * k];
-};
-const con = (c: RGB, k: number, pivot = 128): RGB => [pivot + (c[0] - pivot) * k, pivot + (c[1] - pivot) * k, pivot + (c[2] - pivot) * k];
 
-const FILTER_FNS: Record<string, (c: RGB) => RGB> = {
-  vivo: (c) => con(sat(c, 1.3), 1.08),
-  calido: (c) => sat([c[0] * 1.06 + 8, c[1] * 1.01 + 3, c[2] * 0.9], 1.05),
-  frio: (c) => [c[0] * 0.93, c[1] * 1.0 + 2, c[2] * 1.07 + 10],
-  dorado: (c) => con([c[0] * 1.05 + 14, c[1] * 1.02 + 7, c[2] * 0.88], 1.06),
-  vintage: (c) => {
-    const s = sat(c, 0.7);
-    return [22 + s[0] * 0.86 + 8, 20 + s[1] * 0.84 + 4, 26 + s[2] * 0.78];
-  },
-  drama: (c) => con(sat(c, 0.82), 1.32, 118).map((x) => x * 0.95) as RGB,
-  bn: (c) => {
-    const y = gray(...c);
-    return con([y, y, y], 1.1);
-  },
-  noir: (c) => {
-    const y = gray(...c);
-    return con([y * 0.94, y * 0.94, y * 0.94], 1.45, 120);
-  },
+/**
+ * Colour filters are affine maps of RGB (scales, offsets, saturation, contrast), so each one is a
+ * 3×4 matrix built once, and blending with its intensity is just interpolating matrices. Row-major:
+ * [r·, g·, b·, offset] for each output channel.
+ */
+type Affine = number[];
+const IDENTITY: Affine = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+/** `b` applied after `a`. */
+function compose(b: Affine, a: Affine): Affine {
+  const o: Affine = new Array(12);
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) o[i * 4 + j] = b[i * 4] * a[j] + b[i * 4 + 1] * a[4 + j] + b[i * 4 + 2] * a[8 + j];
+    o[i * 4 + 3] = b[i * 4] * a[3] + b[i * 4 + 1] * a[7] + b[i * 4 + 2] * a[11] + b[i * 4 + 3];
+  }
+  return o;
+}
+const chain = (...ms: Affine[]) => ms.reduce((acc, m) => compose(m, acc), IDENTITY);
+/** Saturation k around the pixel's luma (0 = grey, 1 = unchanged). */
+const satM = (k: number): Affine => {
+  const w = [0.299, 0.587, 0.114];
+  return [0, 1, 2].flatMap((i) => [...w.map((wj, j) => (1 - k) * wj + (i === j ? k : 0)), 0]);
+};
+const conM = (k: number, pivot = 128): Affine => [k, 0, 0, pivot * (1 - k), 0, k, 0, pivot * (1 - k), 0, 0, k, pivot * (1 - k)];
+const diagM = (r: number, g: number, b: number, or = 0, og = 0, ob = 0): Affine => [r, 0, 0, or, 0, g, 0, og, 0, 0, b, ob];
+
+const FILTERS: Record<string, Affine> = {
+  vivo: chain(satM(1.3), conM(1.08)),
+  calido: chain(diagM(1.06, 1.01, 0.9, 8, 3, 0), satM(1.05)),
+  frio: diagM(0.93, 1.0, 1.07, 0, 2, 10),
+  dorado: chain(diagM(1.05, 1.02, 0.88, 14, 7, 0), conM(1.06)),
+  vintage: chain(satM(0.7), diagM(0.86, 0.84, 0.78, 30, 24, 26)),
+  drama: chain(satM(0.82), conM(1.32, 118), diagM(0.95, 0.95, 0.95)),
+  bn: chain(satM(0), conM(1.1)),
+  noir: chain(satM(0), diagM(0.94, 0.94, 0.94), conM(1.45, 120)),
 };
 
 function globalAdjust(img: Img, s: Settings) {
   const bright = v(s, "brillo"), contrast = v(s, "contraste"), satur = v(s, "saturacion"), warm = v(s, "calidez");
   const hi = v(s, "luces"), sh = v(s, "sombras"), sharp = v(s, "nitidez"), vig = v(s, "vineta");
   const filterId = str(s, "filtro");
-  const filter = Object.hasOwn(FILTER_FNS, filterId) ? FILTER_FNS[filterId] : undefined;
+  const filter = Object.hasOwn(FILTERS, filterId) ? FILTERS[filterId] : undefined;
   const fAmt = v(s, "filtroIntensidad");
   const { W, H, d } = img;
+  const n = W * H;
 
   if (sharp > 0) {
-    const Y = new Float32Array(W * H);
-    for (let k = 0; k < W * H; k++) Y[k] = luma(d[k * 4], d[k * 4 + 1], d[k * 4 + 2]);
-    const blurred = gaussian(new Float32Array(Y), W, H, Math.max(0.8, Math.max(W, H) / 1500));
-    for (let k = 0; k < W * H; k++) {
-      const delta = (Y[k] - blurred[k]) * sharp * 1.6;
+    // Unsharp mask on luma; the blurred copy is the only full-size buffer kept.
+    const blurred = new Float32Array(n);
+    for (let k = 0; k < n; k++) blurred[k] = luma(d[k * 4], d[k * 4 + 1], d[k * 4 + 2]);
+    gaussian(blurred, W, H, Math.max(0.8, Math.max(W, H) / 1500));
+    const amt = sharp * 1.6;
+    for (let k = 0; k < n; k++) {
       const i = k * 4;
+      const delta = (luma(d[i], d[i + 1], d[i + 2]) - blurred[k]) * amt;
       d[i] = d[i] + delta;
       d[i + 1] = d[i + 1] + delta;
       d[i + 2] = d[i + 2] + delta;
     }
   }
 
-  if (!bright && !contrast && !satur && !warm && !hi && !sh && !vig && !(filter && fAmt)) return;
+  const useFilter = !!filter && fAmt > 0;
+  if (!bright && !contrast && !satur && !warm && !hi && !sh && !vig && !useFilter) return;
 
+  // Brightness (gamma), contrast and warmth are per channel: one lookup table each.
   const gamma = Math.pow(2, -bright * 0.75);
   const kc = 1 + contrast * (contrast > 0 ? 0.55 : 0.45);
-  const lut: Float32Array[] = [0, 1, 2].map((ch) => {
-    const t = new Float32Array(256);
-    for (let x = 0; x < 256; x++) {
-      let y = 255 * Math.pow(x / 255, gamma);
-      y = 128 + (y - 128) * kc;
-      y += warm * (ch === 0 ? 16 : ch === 1 ? 3 : -16);
-      t[x] = y;
+  const lut = [new Float32Array(256), new Float32Array(256), new Float32Array(256)];
+  for (let ch = 0; ch < 3; ch++)
+    for (let x = 0; x < 256; x++) lut[ch][x] = 128 + (255 * Math.pow(x / 255, gamma) - 128) * kc + warm * (ch === 0 ? 16 : ch === 1 ? 3 : -16);
+  const [lr, lg, lb] = lut;
+
+  // Shadows/highlights depend on luma: a table over 1024 luma steps.
+  const shLut = new Float32Array(1024);
+  if (hi || sh)
+    for (let i = 0; i < 1024; i++) {
+      const l = i / 1023;
+      shLut[i] = 255 * (sh * 0.32 * (1 - smoothstep(0, 0.55, l)) + hi * 0.3 * smoothstep(0.45, 1, l));
     }
-    return t;
-  });
+
+  // Saturation and the filter (blended by its intensity) fold into one affine map.
+  let m = satur ? satM(1 + satur) : IDENTITY;
+  if (useFilter) m = compose(IDENTITY.map((x, i) => x + (filter![i] - x) * fAmt), m);
+  const affine = m.some((x, i) => x !== IDENTITY[i]);
+  const [m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11] = m;
+
+  // Vignette depends on the normalised squared distance to the centre: another table.
+  const vigLut = new Float32Array(1025);
+  if (vig) for (let i = 0; i <= 1024; i++) vigLut[i] = 1 - vig * 0.6 * smoothstep(0.35, 1.05, Math.sqrt(i / 1024));
   const cx = W / 2, cy = H / 2;
+
   for (let y = 0; y < H; y++) {
     const ny = (y - cy) / cy;
-    for (let x = 0; x < W; x++) {
-      const i = (y * W + x) * 4;
-      let c: RGB = [lut[0][d[i]], lut[1][d[i + 1]], lut[2][d[i + 2]]];
+    const ny2 = ny * ny;
+    let i = y * W * 4;
+    for (let x = 0; x < W; x++, i += 4) {
+      let r = lr[d[i]], g = lg[d[i + 1]], b = lb[d[i + 2]];
       if (hi || sh) {
-        const l = clamp01(gray(...c) / 255);
-        const delta = 255 * (sh * 0.32 * (1 - smoothstep(0, 0.55, l)) + hi * 0.3 * smoothstep(0.45, 1, l));
-        c = [c[0] + delta, c[1] + delta, c[2] + delta];
+        let li = ((0.299 * r + 0.587 * g + 0.114 * b) / 255) * 1023;
+        li = li < 0 ? 0 : li > 1023 ? 1023 : li;
+        const dl = shLut[li | 0];
+        r += dl; g += dl; b += dl;
       }
-      if (satur) c = sat(c, 1 + satur);
-      if (filter && fAmt) {
-        const f = filter(c);
-        c = [c[0] + (f[0] - c[0]) * fAmt, c[1] + (f[1] - c[1]) * fAmt, c[2] + (f[2] - c[2]) * fAmt];
+      if (affine) {
+        const nr = m0 * r + m1 * g + m2 * b + m3;
+        const ng = m4 * r + m5 * g + m6 * b + m7;
+        b = m8 * r + m9 * g + m10 * b + m11;
+        r = nr;
+        g = ng;
       }
       if (vig) {
         const nx = (x - cx) / cx;
-        const k = 1 - vig * 0.6 * smoothstep(0.35, 1.05, Math.sqrt((nx * nx + ny * ny) / 2));
-        c = [c[0] * k, c[1] * k, c[2] * k];
+        let q = ((nx * nx + ny2) / 2) * 1024;
+        q = q > 1024 ? 1024 : q;
+        const f = vigLut[q | 0];
+        r *= f; g *= f; b *= f;
       }
-      d[i] = clamp(c[0]);
-      d[i + 1] = clamp(c[1]);
-      d[i + 2] = clamp(c[2]);
+      d[i] = r;
+      d[i + 1] = g;
+      d[i + 2] = b;
     }
   }
 }
@@ -998,19 +1065,48 @@ function globalAdjust(img: Img, s: Settings) {
 // ───────────────────────────── pipeline ─────────────────────────────
 
 export function needsSegmentation(s: Settings) {
-  return !!(num(s, "desenfoque") || (str(s, "fondoColor") && num(s, "fondoIntensidad")) || (str(s, "cabelloColor") && num(s, "cabelloIntensidad")));
+  return !!(
+    num(s, "desenfoque") ||
+    (str(s, "fondoColor") && num(s, "fondoIntensidad")) ||
+    (str(s, "cabelloColor") && num(s, "cabelloIntensidad")) ||
+    // Skin retouch uses the skin/hair/accessory masks to leave beards, fringes and glasses alone.
+    num(s, "suavizar") || num(s, "manchas") || num(s, "arrugas") || num(s, "iluminar")
+  );
 }
 
-export function render({ data, width: W, height: H, faces, seg, settings: s }: RenderInput): Uint8ClampedArray {
-  const geos = faces.map((f) => geometry(f.map((q) => ({ x: q.x * W, y: q.y * H }))));
+/** Settings that only touch the last stage (light and colour): changing them reuses the rest. */
+export const LATE_KEYS = ["luz", "luzIntensidad", "brillo", "contraste", "saturacion", "calidez", "luces", "sombras", "nitidez", "vineta", "filtro", "filtroIntensidad"];
+/** Settings the engine never reads (they only drive the UI). */
+const UI_KEYS = ["look", "lookIntensidad"];
 
-  const ops = geos.flatMap((g) => warpOps(g, s));
-  const field = buildField(ops, W, H);
+/** The key of everything stage one depends on, besides the photo and its analysis. */
+export function baseKey(s: Settings) {
+  return JSON.stringify(Object.keys(s).filter((k) => !LATE_KEYS.includes(k) && !UI_KEYS.includes(k)).sort().map((k) => [k, s[k]]));
+}
+
+export type Stage = { d: Uint8ClampedArray; W: number; H: number; warped: Geo[] };
+
+/** Which faces get the face effects: one (by index, largest first) or all of them (-1). */
+function chosen<T>(all: T[], s: Settings): T[] {
+  const i = typeof s.cara === "number" ? s.cara : 0;
+  if (i < 0 || all.length <= 1) return all;
+  return all[i] ? [all[i]] : all.slice(0, 1);
+}
+
+/** Stage one: reshaping, hair, face retouch and makeup, background and glasses. */
+export function renderBase({ data, width: W, height: H, faces, seg, settings: s }: RenderInput): Stage {
+  const geos = chosen(faces, s).map((f) => geometry(f.map((q) => ({ x: q.x * W, y: q.y * H }))));
+
+  const { field, ops } = buildSafeField(geos.flatMap((g) => warpOps(g, s)), W, H);
   const img: Img = { d: field ? applyField(data, W, H, field) : new Uint8ClampedArray(data), W, H };
   // After reshaping, every mask is drawn where the features now are.
   const warped = ops.length ? geos.map((g) => geometry(g.p.map((q) => forward(ops, q)))) : geos;
 
-  if (seg && str(s, "cabelloColor") && num(s, "cabelloIntensidad")) hairColor(img, seg, field, str(s, "cabelloColor"), v(s, "cabelloIntensidad"));
+  if (seg && str(s, "cabelloColor") && num(s, "cabelloIntensidad")) {
+    // With one face chosen among several, only that person's hair: a generous box around the head.
+    const limit = faces.length > 1 && warped.length === 1 ? headBox(warped[0]) : undefined;
+    hairColor(img, seg, field, str(s, "cabelloColor"), v(s, "cabelloIntensidad"), limit);
+  }
 
   for (const g of warped) {
     retouch(img, g, s, seg, field);
@@ -1029,11 +1125,32 @@ export function render({ data, width: W, height: H, faces, seg, settings: s }: R
   if (seg && (num(s, "desenfoque") || (str(s, "fondoColor") && num(s, "fondoIntensidad"))))
     background(img, seg, field, v(s, "desenfoque"), str(s, "fondoColor"), v(s, "fondoIntensidad"));
 
-  // Light falls on the face and on the glasses alike, so glasses go first.
+  // Light falls on the face and on the glasses alike, so glasses go before the light.
   const glassStyle = GLASS_STYLES[str(s, "gafas")] as GlassStyle | undefined;
   if (glassStyle) for (const g of warped) glasses(img, g, glassStyle, str(s, "gafasColor"));
-  if (str(s, "luz") && num(s, "luzIntensidad")) lighting(img, warped, str(s, "luz"), v(s, "luzIntensidad"));
+  return { d: img.d, W, H, warped };
+}
 
+/**
+ * Stage two: light, then colour adjustments. Works on a copy so a cached stage one can be reused,
+ * or in place (`consume`) when the stage won't be needed again, saving a full-size copy.
+ */
+export function finish(stage: Stage, s: Settings, consume = false): Uint8ClampedArray {
+  const img: Img = { d: consume ? stage.d : new Uint8ClampedArray(stage.d), W: stage.W, H: stage.H };
+  if (str(s, "luz") && num(s, "luzIntensidad")) lighting(img, stage.warped, str(s, "luz"), v(s, "luzIntensidad"));
   globalAdjust(img, s);
   return img.d;
+}
+
+export function render(input: RenderInput): Uint8ClampedArray {
+  return finish(renderBase(input), input.settings, true);
+}
+
+function headBox(g: Geo): Box {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const q of g.p) {
+    x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y);
+  }
+  const w = x1 - x0, h = y1 - y0;
+  return { x0: x0 - w * 0.9, y0: y0 - h * 1.1, x1: x1 + w * 0.9, y1: y1 + h * 1.6 };
 }

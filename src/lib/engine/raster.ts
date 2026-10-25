@@ -194,15 +194,25 @@ function boxH(src: Float32Array, dst: Float32Array, w: number, h: number, r: num
   }
 }
 
+/**
+ * Vertical pass, walked row by row with one running sum per column: the same result as going down
+ * each column, but memory is read in order, which is several times faster on large images.
+ */
 function boxV(src: Float32Array, dst: Float32Array, w: number, h: number, r: number) {
   const iarr = 1 / (r + r + 1);
-  for (let x = 0; x < w; x++) {
-    const first = src[x];
-    let val = (r + 1) * first;
-    for (let j = 0; j < r; j++) val += src[Math.min(j, h - 1) * w + x];
-    for (let y = 0; y < h; y++) {
-      val += src[Math.min(y + r, h - 1) * w + x] - (y - r - 1 >= 0 ? src[(y - r - 1) * w + x] : first);
-      dst[y * w + x] = val * iarr;
+  const acc = new Float32Array(w);
+  for (let x = 0; x < w; x++) acc[x] = (r + 1) * src[x];
+  for (let j = 0; j < r; j++) {
+    const row = Math.min(j, h - 1) * w;
+    for (let x = 0; x < w; x++) acc[x] += src[row + x];
+  }
+  for (let y = 0; y < h; y++) {
+    const add = Math.min(y + r, h - 1) * w;
+    const sub = y - r - 1 >= 0 ? (y - r - 1) * w : 0; // row 0 doubles as the clamped edge
+    const out = y * w;
+    for (let x = 0; x < w; x++) {
+      acc[x] += src[add + x] - src[sub + x];
+      dst[out + x] = acc[x] * iarr;
     }
   }
 }

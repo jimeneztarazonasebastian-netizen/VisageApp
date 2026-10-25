@@ -216,6 +216,8 @@ export const DEFAULTS: Settings = {
   // The look currently applied (one of LOOKS) and how strongly.
   look: "",
   lookIntensidad: 100,
+  // Which face gets the face effects when there are several: 0 = the largest, -1 = all of them.
+  cara: 0,
 };
 
 /** The neutral value of a control: what its reset button goes back to. */

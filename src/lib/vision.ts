@@ -1,5 +1,5 @@
 // Face landmarks and person segmentation with MediaPipe, entirely in the browser. The engine and the
-// models are served from our own domain (/vendor/mediapipe, /models) and loaded on first use.
+// models are served from our own domain (/vendor/mediapipe/<version>, /models) and loaded on first use.
 import type { FaceLandmarker, ImageSegmenter } from "@mediapipe/tasks-vision";
 
 export type Point = { x: number; y: number };
@@ -8,9 +8,13 @@ export type Face = Point[];
 
 export type Mask = { width: number; height: number; data: Float32Array };
 /** Confidence masks from the multiclass selfie model, all at the same resolution. */
-export type Segmentation = { background: Mask; hair: Mask; bodySkin: Mask; faceSkin: Mask; clothes: Mask };
+export type Segmentation = { background: Mask; hair: Mask; bodySkin: Mask; faceSkin: Mask; clothes: Mask; accessories: Mask };
 
-const WASM = "/vendor/mediapipe";
+/** Masks are soft, so this resolution is plenty; it keeps them small in memory (they go to the worker). */
+const MASK_EDGE = 800;
+
+// Versioned path (see scripts/copy-vision.mjs), so an update never runs against a cached old copy.
+const WASM = `/vendor/mediapipe/${process.env.NEXT_PUBLIC_MEDIAPIPE_VERSION}`;
 const lib = () => import("@mediapipe/tasks-vision");
 
 let fileset: ReturnType<typeof makeFileset> | undefined;
@@ -55,9 +59,59 @@ export function preloadFaces() {
   getLandmarker().catch(() => {});
 }
 
+function detectIn(lm: FaceLandmarker, image: HTMLCanvasElement): Face[] {
+  try {
+    return lm.detect(image).faceLandmarks.filter((f) => f.length >= 468).map((f) => f.map((p) => ({ x: p.x, y: p.y })));
+  } catch (e) {
+    // A failed run can leave the landmarker unusable (e.g. after iOS drops the graphics context):
+    // forget it so the next attempt builds a fresh one.
+    landmarker = undefined;
+    throw e;
+  }
+}
+
+const faceBox = (f: Face) => {
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+  for (const p of f) {
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+  }
+  return { x0, y0, x1, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, area: (x1 - x0) * (y1 - y0) };
+};
+
+/**
+ * The detector is tuned for selfies; in a half-body or group shot the face can be too small for
+ * it. When nothing is found, look again in overlapping zoomed-in tiles and map the result back.
+ */
+function detectSmall(lm: FaceLandmarker, image: HTMLCanvasElement, found: Face[]): Face[] {
+  const W = image.width, H = image.height;
+  // A 3×3 grid of overlapping half-size tiles: each face is fully inside at least one of them.
+  const tiles: number[][] = [];
+  for (const ty of [0, 0.25, 0.5]) for (const tx of [0, 0.25, 0.5]) tiles.push([tx, ty, 0.5]);
+  const tile = document.createElement("canvas");
+  for (const [tx, ty, ts] of tiles) {
+    const sx = Math.round(tx * W), sy = Math.round(ty * H), sw = Math.round(ts * W), sh = Math.round(ts * H);
+    tile.width = sw;
+    tile.height = sh;
+    tile.getContext("2d")!.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
+    for (const f of detectIn(lm, tile)) {
+      const mapped = f.map((p) => ({ x: (sx + p.x * sw) / W, y: (sy + p.y * sh) / H }));
+      const b = faceBox(mapped);
+      if (!found.some((g) => Math.hypot(faceBox(g).cx - b.cx, faceBox(g).cy - b.cy) < 0.04)) found.push(mapped);
+    }
+  }
+  tile.width = tile.height = 0;
+  return found;
+}
+
+/** All faces in the photo, largest first (the default one to edit). */
 export async function detectFaces(image: HTMLCanvasElement): Promise<Face[]> {
-  const result = (await getLandmarker()).detect(image);
-  return result.faceLandmarks.filter((f) => f.length >= 468).map((f) => f.map((p) => ({ x: p.x, y: p.y })));
+  const lm = await getLandmarker();
+  let faces = detectIn(lm, image);
+  // A selfie face fills a good part of the frame; when none is found, or the ones found are small
+  // (half-body or group shot, where others are likely missed too), look closer.
+  const largest = Math.max(0, ...faces.map((f) => faceBox(f).x1 - faceBox(f).x0));
+  if (!faces.length || largest < 0.3) faces = detectSmall(lm, image, faces);
+  return faces.sort((a, b) => faceBox(b).area - faceBox(a).area);
 }
 
 /**
@@ -109,6 +163,12 @@ export async function segment(image: HTMLCanvasElement, faces: Face[]): Promise<
       }
     }
   }
+  // Shrink the finished masks: they are soft, and sampled with interpolation anyway.
+  const k = Math.min(1, MASK_EDGE / Math.max(W, H));
+  if (k < 1) {
+    const mw = Math.max(1, Math.round(W * k)), mh = Math.max(1, Math.round(H * k));
+    for (const key of Object.keys(full) as (keyof Segmentation)[]) full[key] = resize(full[key], mw, mh);
+  }
   return full;
 }
 
@@ -121,8 +181,8 @@ function run(seg: ImageSegmenter, image: HTMLCanvasElement, W: number, H: number
       if (!m) return { width: W, height: H, data: new Float32Array(W * H) };
       return resize({ width: m.width, height: m.height, data: new Float32Array(m.getAsFloat32Array()) }, W, H);
     };
-    // Category order of selfie_multiclass_256x256.
-    return { background: get(0), hair: get(1), bodySkin: get(2), faceSkin: get(3), clothes: get(4) };
+    // Category order of selfie_multiclass_256x256 (5 = others: glasses, hats and other accessories).
+    return { background: get(0), hair: get(1), bodySkin: get(2), faceSkin: get(3), clothes: get(4), accessories: get(5) };
   } finally {
     result.close();
   }

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AI_GROUPS } from "@/lib/ai-presets";
+import { blendIntoPhoto, cropCanvas, headCrop, loadImage } from "@/lib/ai-blend";
+import { AI_GROUPS, AI_PRESETS } from "@/lib/ai-presets";
 import { getEngine, StaleError } from "@/lib/engine/client";
 import { needsSegmentation } from "@/lib/engine/render";
 import { drawScaled, exportCanvas, loadPhoto, pixels, toBlob, type Photo } from "@/lib/photo";
@@ -153,6 +154,9 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
   const [analysed, setAnalysed] = useState("");
   const [seg, setSeg] = useState<Segmentation | null>(null);
   const [segState, setSegState] = useState<"none" | "loading" | "ready" | "error">("none");
+  const [faceError, setFaceError] = useState(false);
+  const [faceRetry, setFaceRetry] = useState(0);
+  const [faceThumbs, setFaceThumbs] = useState<string[]>([]);
   /** Faces and masks per photo, so undoing an AI edit doesn't analyse the photo again. */
   const analyses = useRef(new Map<string, { faces: Face[]; seg: Segmentation | null }>());
   const [category, setCategory] = useState("looks");
@@ -225,6 +229,7 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
     const cached = analyses.current.get(token);
     if (cached) {
       engine.setAnalysis(token, cached.faces, cached.seg);
+      setFaceError(false);
       setAnalysed(token);
       setFaces(cached.faces);
       setSeg(cached.seg);
@@ -234,7 +239,10 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
     setFaces(null);
     setSeg(null);
     setSegState("none");
-    detectFaces(photo.preview)
+    setFaceError(false);
+    // A download that never finishes must not leave "Analizando el rostro…" up forever.
+    const timeout = new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("timeout")), 25_000));
+    Promise.race([detectFaces(photo.preview), timeout])
       .then((f) => {
         analyses.current.set(token, { faces: f, seg: null });
         engine.setAnalysis(token, f, null);
@@ -246,14 +254,38 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
       .catch(() => {
         engine.setAnalysis(token, [], null);
         if (cancelled) return;
+        // Not "no face": the detector itself failed (no connection the first time, iOS hiccup).
+        // Filters and adjustments still work meanwhile; the badge offers to try again.
         setAnalysed(token);
         setFaces([]);
-        setToast("No se pudo cargar el detector de caras. Revisa la conexión la primera vez.");
+        setFaceError(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [engine, photo]);
+  }, [engine, photo, faceRetry]);
+
+  // Small pictures of each face, for choosing which one to edit when there are several.
+  useEffect(() => {
+    if (!faces || faces.length < 2 || analysed !== photo.id) {
+      setFaceThumbs([]);
+      return;
+    }
+    const src = photo.preview;
+    setFaceThumbs(
+      faces.map((f) => {
+        let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+        for (const p of f) {
+          x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+        }
+        const side = Math.max((x1 - x0) * src.width, (y1 - y0) * src.height) * 1.3;
+        const c = document.createElement("canvas");
+        c.width = c.height = 64;
+        c.getContext("2d")!.drawImage(src, ((x0 + x1) / 2) * src.width - side / 2, ((y0 + y1) / 2) * src.height - side / 2, side, side, 0, 0, 64, 64);
+        return c.toDataURL("image/jpeg", 0.8);
+      }),
+    );
+  }, [faces, analysed, photo]);
 
   // Hair and background need the segmentation model (about 16 MB), loaded only when used.
   const wantsSeg = needsSegmentation(settings) || !!CATEGORIES.find((c) => c.id === category)?.needsSegmentation;
@@ -404,7 +436,14 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
       lock = (await navigator.wakeLock?.request("screen")) ?? null;
     } catch {}
     try {
-      const src = drawScaled(source.image, source.width, source.height, 1536);
+      // Head-only edits: send a crop around the chosen face and blend the result back into the
+      // full-resolution photo (the rest of the picture keeps its pixels and the photo its size).
+      const scope = req.preset ? (AI_PRESETS[req.preset]?.scope ?? "face") : "full";
+      const facesOf = analyses.current.get(source.id)?.faces ?? [];
+      const which = num(cur.settings, "cara") > 0 ? num(cur.settings, "cara") : 0;
+      const face = scope === "face" ? (facesOf[which] ?? facesOf[0]) : undefined;
+      const crop = face ? headCrop(face, source.width, source.height) : null;
+      const src = crop ? cropCanvas(source.image, crop, 1536) : drawScaled(source.image, source.width, source.height, 1536);
       const image = await blobToBase64(await toBlob(src, "image/jpeg", 0.92));
       let password = "";
       try {
@@ -424,7 +463,9 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
       if (res.status === 401) setNeedPassword(true);
       if (!res.ok || !json.image) throw new Error(json.error || httpMessage(res.status));
       const bytes = Uint8Array.from(atob(json.image), (c) => c.charCodeAt(0));
-      const next = await loadPhoto(new File([bytes], `${original.name}.jpg`, { type: json.mime || "image/jpeg" }));
+      let out: Blob = new Blob([bytes], { type: json.mime || "image/jpeg" });
+      if (crop) out = await blendIntoPhoto(source.image, source.width, source.height, crop, await loadImage(out));
+      const next = await loadPhoto(new File([out], `${original.name}.jpg`, { type: out.type || "image/jpeg" }));
       const now = docRef.current;
       const at = now.bases.indexOf(source);
       if (at < 0 || !mounted.current) return; // undone while generating
@@ -454,12 +495,21 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
   const save = async () => {
     setSaving(true);
     const p = photo;
-    const full = exportCanvas(p);
     try {
+      const full = exportCanvas(p);
       engine.setSource("export", p.id, pixels(full));
-      const img = await engine.render("export", p.id, settings);
-      full.getContext("2d")!.putImageData(img, 0, 0);
-      const blob = await toBlob(full);
+      full.width = full.height = 0; // the pixels now live in the engine: free the canvas right away
+      const out = await engine.renderForSave("export", p.id, settings);
+      let blob: Blob;
+      if (out instanceof Blob) blob = out;
+      else {
+        const c = document.createElement("canvas");
+        c.width = out.width;
+        c.height = out.height;
+        c.getContext("2d")!.putImageData(out, 0, 0);
+        blob = await toBlob(c);
+        c.width = c.height = 0;
+      }
       setSavedDoc(docRef.current);
       const file = new File([blob], `${original.name}-visage.jpg`, { type: "image/jpeg" });
       setSaved((old) => {
@@ -470,7 +520,6 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
       setToast(e instanceof StaleError ? "La foto cambió mientras se guardaba. Vuelve a tocar Guardar." : "No se pudo guardar la foto. Cierra otras apps y vuelve a intentarlo.");
     } finally {
       engine.release("export");
-      full.width = full.height = 0;
       if (mounted.current) setSaving(false);
     }
   };
@@ -501,10 +550,10 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
           <Icon name="close" className="h-5 w-5" />
         </button>
         <div className="flex items-center gap-1">
-          <button className="grid h-10 w-10 place-items-center rounded-full disabled:opacity-30" disabled={histIndex <= 0} onClick={() => goTo(histIndex - 1)} aria-label="Deshacer">
+          <button className="grid h-10 w-10 place-items-center rounded-full disabled:opacity-30" disabled={histIndex <= 0} onClick={() => goTo(hist.current.index - 1)} aria-label="Deshacer">
             <Icon name="undo" className="h-5 w-5" />
           </button>
-          <button className="grid h-10 w-10 place-items-center rounded-full disabled:opacity-30" disabled={histIndex >= histList.length - 1} onClick={() => goTo(histIndex + 1)} aria-label="Rehacer">
+          <button className="grid h-10 w-10 place-items-center rounded-full disabled:opacity-30" disabled={histIndex >= histList.length - 1} onClick={() => goTo(hist.current.index + 1)} aria-label="Rehacer">
             <Icon name="redo" className="h-5 w-5" />
           </button>
           <button
@@ -524,6 +573,17 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
       <section className="relative min-h-0 flex-1">
         <Viewer canvas={canvas} onHoldChange={hold} />
         {!faces && !ai && <Badge>Analizando el rostro…</Badge>}
+        {faceError && !ai && (
+          <button
+            className="absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-black/75 px-4 py-1.5 text-xs text-white backdrop-blur"
+            onClick={() => {
+              analyses.current.delete(photo.id);
+              setFaceRetry((n) => n + 1);
+            }}
+          >
+            No se pudo analizar la cara · <span className="font-semibold text-fuchsia-300">Reintentar</span>
+          </button>
+        )}
         {ai && (
           <div className="absolute inset-0 grid place-items-center bg-black/45 backdrop-blur-[2px]">
             <div className="mx-6 flex flex-col items-center gap-3 rounded-3xl bg-black/75 px-6 py-5 text-center">
@@ -538,6 +598,15 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
           </div>
         )}
         {segState === "loading" && <Badge>Cargando cabello y fondo…</Badge>}
+        {saving && (
+          <div className="absolute inset-0 grid place-items-center bg-black/40">
+            <div className="flex flex-col items-center gap-3 rounded-3xl bg-black/75 px-6 py-5 text-center">
+              <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-fuchsia-400" />
+              <div className="text-sm font-medium">Guardando a resolución completa…</div>
+              <div className="text-xs text-white/55">Puede tardar unos segundos. No salgas de la app.</div>
+            </div>
+          </div>
+        )}
         {holding && <Badge>Original</Badge>}
         <button
           className="absolute bottom-3 right-3 grid h-11 w-11 place-items-center rounded-full bg-black/55 backdrop-blur"
@@ -554,6 +623,24 @@ function Editor({ start, onClose, onFile }: { start: Start; onClose: () => void;
         </button>
         {toast && <div className="absolute inset-x-4 top-3 rounded-2xl bg-white/95 px-4 py-3 text-sm text-black shadow-xl">{toast}</div>}
       </section>
+
+      {faceThumbs.length > 1 && (
+        <div className="no-scrollbar flex shrink-0 items-center gap-2 overflow-x-auto bg-neutral-950 px-4 pt-2">
+          <span className="shrink-0 text-[11px] text-white/50">Editar:</span>
+          {faceThumbs.map((t, i) => {
+            const active = num(settings, "cara") === i;
+            return (
+              <button key={i} onClick={() => apply({ ...docRef.current, settings: { ...docRef.current.settings, cara: i } })} className={`h-9 w-9 shrink-0 overflow-hidden rounded-full ring-2 ${active ? "ring-fuchsia-500" : "ring-white/10"}`} aria-label={`Cara ${i + 1}`}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={t} alt="" className="h-full w-full object-cover" />
+              </button>
+            );
+          })}
+          <button onClick={() => apply({ ...docRef.current, settings: { ...docRef.current.settings, cara: -1 } })} className={`shrink-0 rounded-full px-3 py-1.5 text-xs ${num(settings, "cara") === -1 ? "bg-white text-black" : "bg-white/10 text-white/80"}`}>
+            Todas
+          </button>
+        </div>
+      )}
 
       <section className="shrink-0 bg-neutral-950 pb-1 pt-3">
         <div className="h-[184px] overflow-y-auto">

@@ -1,6 +1,10 @@
 // Generative edits (sent to Gemini). Labels are shown in the app; prompts are only used on the server.
 
-export type AiPreset = { id: string; name: string; prompt: string };
+/**
+ * "face": only the head changes, so the app sends a crop around it and blends the result back into
+ * the full-resolution photo. "full": the edit can touch the whole picture (clothes, arms...).
+ */
+export type AiPreset = { id: string; name: string; prompt: string; scope?: "face" | "full" };
 export type AiGroup = { id: string; label: string; presets: AiPreset[] };
 
 const age = (id: string, name: string, years: string, extra: string): AiPreset => ({
@@ -16,7 +20,7 @@ export const AI_GROUPS: AiGroup[] = [
     presets: [
       age("nino", "Niño/a", "like a child of about 7 years old", "Child proportions: rounder face, bigger eyes relative to the face, smaller nose, smooth skin."),
       age("teen", "Adolescente", "about 16 years old", "Youthful skin and softer features."),
-      age("joven", "Joven", "about 10 years younger than now, in their twenties", "Smoother, firmer skin, fewer lines, fuller cheeks, fewer grey hairs."),
+      age("joven", "Joven", "about 10 years younger than they currently appear", "Smoother, firmer skin, fewer lines, fuller cheeks, fewer grey hairs."),
       age("adulto", "40 años", "about 40 years old", "Subtle expression lines, mature features."),
       age("mayor", "60 años", "about 60 years old", "Realistic ageing: wrinkles around eyes and forehead, nasolabial folds, some sagging, grey hair."),
       age("anciano", "80 años", "about 80 years old", "Strong realistic ageing: deep wrinkles, thinner and white or grey hair, age spots, sagging skin."),
@@ -30,13 +34,13 @@ export const AI_GROUPS: AiGroup[] = [
         id: "mujer",
         name: "Mujer",
         prompt:
-          "Transform the person into a woman, as if they had been born female: feminine facial structure and features, no facial hair, a natural feminine hairstyle of similar colour. Keep the same identity resemblance (like their sister), age, ethnicity, skin tone, eye colour, expression, pose, clothing style, background and lighting.",
+          "Show this same person as a woman, as if they had been born female: feminine facial structure and features, no facial hair, a natural feminine hairstyle of similar colour. It must still clearly be the same individual (same facial identity, proportions and eyes), with the same age, ethnicity, skin tone, eye colour, expression, pose, clothing style, background and lighting.",
       },
       {
         id: "hombre",
         name: "Hombre",
         prompt:
-          "Transform the person into a man, as if they had been born male: masculine facial structure and features, a natural masculine short hairstyle of similar colour, a light natural beard shadow. Keep the same identity resemblance (like their brother), age, ethnicity, skin tone, eye colour, expression, pose, clothing style, background and lighting.",
+          "Show this same person as a man, as if they had been born male: masculine facial structure and features, a natural masculine short hairstyle of similar colour, a light natural beard shadow. It must still clearly be the same individual (same facial identity, proportions and eyes), with the same age, ethnicity, skin tone, eye colour, expression, pose, clothing style, background and lighting.",
       },
     ],
   },
@@ -87,8 +91,8 @@ export const AI_GROUPS: AiGroup[] = [
       { id: "pelirrojo", name: "Pelirrojo", prompt: "Change the hair colour to a natural copper red, keeping hairstyle and texture." },
       { id: "canas", name: "Canas", prompt: "Make the hair naturally silver-grey, keeping hairstyle and texture." },
       { id: "pecas", name: "Pecas", prompt: "Add natural light freckles across the nose and cheeks." },
-      { id: "tatuaje", name: "Tatuajes", prompt: "Add tasteful realistic tattoos on the visible arms and neck (not on the face)." },
-      { id: "traje", name: "Traje", prompt: "Dress the person in a well-fitted dark suit with a white shirt, keeping the pose." },
+      { id: "tatuaje", name: "Tatuajes", scope: "full", prompt: "Add tasteful realistic tattoos on the visible arms and neck (not on the face)." },
+      { id: "traje", name: "Traje", scope: "full", prompt: "Dress the person in a well-fitted dark suit with a white shirt, keeping the pose." },
     ],
   },
 ];

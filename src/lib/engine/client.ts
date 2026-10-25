@@ -4,7 +4,7 @@ import type { Settings } from "../settings";
 import type { Face, Segmentation } from "../vision";
 import type { WorkerRequest, WorkerResponse } from "./engine.worker";
 
-type Pending = { resolve: (v: ImageData) => void; reject: (e: Error) => void };
+type Pending = { resolve: (v: ImageData | Blob) => void; reject: (e: Error) => void };
 type Job = { key: string; token: string; settings: Settings; resolve: (v: ImageData | null) => void };
 
 /** Thrown for renders of a photo that is no longer the current one. */
@@ -25,6 +25,7 @@ export class Engine {
       if (!p) return;
       this.pending.delete(msg.id);
       if (msg.type === "error") p.reject(msg.stale ? new StaleError(msg.message) : new Error(msg.message));
+      else if (msg.type === "encoded") p.resolve(msg.blob);
       else p.resolve(new ImageData(new Uint8ClampedArray(msg.data.buffer as ArrayBuffer), msg.width, msg.height));
     };
     // If the worker itself fails, fail every request instead of leaving the editor waiting forever.
@@ -53,12 +54,21 @@ export class Engine {
     this.post({ type: "release", key });
   }
 
-  render(key: string, token: string, settings: Settings): Promise<ImageData> {
+  private request(key: string, token: string, settings: Settings, encode: boolean): Promise<ImageData | Blob> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.post({ type: "render", id, key, token, settings });
+      this.post({ type: "render", id, key, token, settings, encode });
     });
+  }
+
+  render(key: string, token: string, settings: Settings): Promise<ImageData> {
+    return this.request(key, token, settings, false) as Promise<ImageData>;
+  }
+
+  /** Renders for saving: a JPEG when the worker can encode it, otherwise the pixels. */
+  renderForSave(key: string, token: string, settings: Settings): Promise<ImageData | Blob> {
+    return this.request(key, token, settings, true);
   }
 
   /** Renders into a preview slot; resolves null when superseded, stale or failed. */
